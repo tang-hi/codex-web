@@ -183,6 +183,21 @@ h1 {
   gap: 10px;
 }
 
+.header-actions #codexStatus {
+  display: none;
+}
+
+.sr-only {
+  height: 1px !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  padding: 0 !important;
+  position: absolute !important;
+  width: 1px !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+}
+
 .status-pill {
   align-items: center;
   color: var(--text);
@@ -500,6 +515,49 @@ tbody tr:last-child td {
   min-width: 0;
 }
 
+.chat-summary-line {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 13px;
+  gap: 7px;
+  min-width: 0;
+}
+
+.chat-summary-line span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-summary-line span + span::before {
+  color: #c4ccd6;
+  content: "·";
+  margin-right: 7px;
+}
+
+.chat-summary-line .ready {
+  color: var(--success);
+  font-weight: 700;
+}
+
+.chat-summary-line .working {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.chat-summary-line .starting {
+  color: var(--warning);
+  font-weight: 700;
+}
+
+.chat-summary-line .error {
+  color: var(--danger);
+  font-weight: 700;
+}
+
 .thread-line span {
   color: var(--muted);
   font-family: "Maple Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -549,17 +607,18 @@ tbody tr:last-child td {
   display: none;
 }
 
+.chat-workbench.details-open .activity-sidebar {
+  display: block;
+}
+
 .sidebar-section {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-panel);
-  box-shadow: 0 10px 24px rgb(15 23 42 / 5%);
+  border-bottom: 1px solid var(--line);
   min-width: 0;
-  padding: 12px;
+  padding: 12px 0;
 }
 
 .sidebar-section + .sidebar-section {
-  margin-top: 12px;
+  margin-top: 0;
 }
 
 .sidebar-heading {
@@ -582,6 +641,12 @@ tbody tr:last-child td {
   font-size: 12px;
 }
 
+.count-badge {
+  background: var(--surface-soft);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
+
 .sidebar-thread-list,
 .sidebar-list,
 .sidebar-kv {
@@ -597,7 +662,7 @@ tbody tr:last-child td {
   height: auto;
   justify-items: start;
   min-height: 0;
-  padding: 8px;
+  padding: 7px 8px;
   text-align: left;
 }
 
@@ -620,6 +685,9 @@ tbody tr:last-child td {
 .sidebar-thread strong {
   font-size: 12px;
   font-weight: 700;
+  line-height: 1.35;
+  max-height: 2.7em;
+  white-space: normal;
 }
 
 .sidebar-thread span,
@@ -636,7 +704,7 @@ tbody tr:last-child td {
 
 .activity-card strong {
   color: var(--text);
-  font-size: 18px;
+  font-size: 15px;
 }
 
 .activity-card strong.ready {
@@ -651,10 +719,36 @@ tbody tr:last-child td {
   color: var(--warning);
 }
 
+.activity-card strong.error {
+  color: var(--danger);
+}
+
 .activity-card span {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.4;
+}
+
+.details-stack,
+.inspector-controls {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.details-stack .inline-meter,
+.inspector-controls .choice-button,
+.inspector-controls .choice-control,
+.inspector-controls .fast-toggle {
+  width: 100%;
+}
+
+.inspector-controls .choice-button {
+  justify-content: space-between;
+}
+
+.session-details {
+  padding-top: 0;
 }
 
 .sidebar-file,
@@ -1507,6 +1601,22 @@ tbody tr:last-child td {
   overflow-wrap: anywhere;
 }
 
+.tool-summary {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.command-details {
+  margin-top: 8px;
+}
+
+.command-details summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
 .command-line {
   background: var(--code-bg) !important;
   border-color: var(--code-line) !important;
@@ -1849,19 +1959,31 @@ dd {
 
   .chat-workbench {
     gap: 12px;
-    grid-template-columns: 260px minmax(0, 1080px) 320px;
+    grid-template-columns: 240px minmax(0, 1120px);
     justify-content: center;
   }
 
-  .chat-sidebar {
+  .thread-sidebar {
     display: block;
     min-height: 0;
     overflow: auto;
+    padding: 4px 8px 4px 0;
   }
 
-  .thread-sidebar,
   .activity-sidebar {
-    align-self: stretch;
+    background: transparent;
+    display: none;
+    min-height: 0;
+    overflow: auto;
+    padding: 4px 0 4px 8px;
+  }
+
+  .chat-workbench.details-open {
+    grid-template-columns: 240px minmax(0, 1040px) 320px;
+  }
+
+  .chat-workbench.details-open .activity-sidebar {
+    display: block;
   }
 }
 

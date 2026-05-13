@@ -52,6 +52,11 @@ const els = {
   rebuildButton: document.getElementById("rebuildButton"),
   appWorkspace: document.getElementById("appWorkspace"),
   codexStatus: document.getElementById("codexStatus"),
+  chatWorkbench: document.querySelector(".chat-workbench"),
+  detailsToggle: document.getElementById("detailsToggle"),
+  chatPrimaryStatus: document.getElementById("chatPrimaryStatus"),
+  chatPrimaryContext: document.getElementById("chatPrimaryContext"),
+  chatPrimaryModel: document.getElementById("chatPrimaryModel"),
   chatThread: document.getElementById("chatThread"),
   copyThreadId: document.getElementById("copyThreadId"),
   chatSessionValue: document.getElementById("chatSessionValue"),
@@ -1162,7 +1167,7 @@ function renderDiffCard(diff, title = "Diff") {
       </div>
       <em>${formatNumber(text.split("\n").length)} lines</em>
     </div>
-    ${diffHtml}
+    <details class="diff-details"><summary>Full diff</summary>${diffHtml}</details>
   `;
   scrollChatToBottom();
 }
@@ -1215,11 +1220,24 @@ function toolItemHtml(item, lifecycle) {
     const output = item.aggregatedOutput || state.codex.commandOutputs[item.id] || "";
     const command = stripShellWrapper(item.command || "");
     const noOutput = lifecycle === "completed" && !output && isSuccessStatus(status);
+    const running = isRunningStatus(status);
+    const summary = commandSummary(item, status, output);
     return `
-      <div class="tool-title"><span>${escapeHtml(commandTitle(item, status))}</span><em>${escapeHtml(commandMeta(item, status))}</em></div>
-      ${item.cwd ? `<div class="tool-subtitle">${escapeHtml(shortPath(item.cwd))}</div>` : ""}
-      <pre class="command-line">$ ${escapeHtml(command)}</pre>
-      ${output ? commandOutputHtml(output, command) : noOutput ? '<div class="tool-empty">(no output)</div>' : ""}
+      <div class="tool-title">
+        <span>${escapeHtml(commandTitle(item, status))}</span>
+        <div class="tool-actions">
+          <button type="button" data-copy-tool="${escapeAttr(encodeURIComponent(command))}">Copy</button>
+          <button type="button" data-collapse-tool>${running ? "Collapse" : "Show details"}</button>
+        </div>
+        <em>${escapeHtml(commandMeta(item, status))}</em>
+      </div>
+      <div class="tool-summary">${escapeHtml(summary)}</div>
+      <details class="command-details" ${running ? "open" : ""}>
+        <summary>${escapeHtml(running ? "Running command" : "Command log")}</summary>
+        ${item.cwd ? `<div class="tool-subtitle">${escapeHtml(shortPath(item.cwd))}</div>` : ""}
+        <pre class="command-line">$ ${escapeHtml(command)}</pre>
+        ${output ? commandOutputHtml(output, command) : noOutput ? '<div class="tool-empty">(no output)</div>' : ""}
+      </details>
     `;
   }
   if (item.type === "fileChange") {
@@ -1235,7 +1253,7 @@ function toolItemHtml(item, lifecycle) {
     const diffs = (item.changes || [])
       .map((change) =>
         change.diff
-          ? `<details class="diff-details" open><summary>${escapeHtml(relativeProjectPath(change.path || "diff"))}</summary>${diffToHtml(change.diff)}</details>`
+          ? `<details class="diff-details"><summary>${escapeHtml(relativeProjectPath(change.path || "diff"))}</summary>${diffToHtml(change.diff)}</details>`
           : "",
       )
       .join("");
@@ -1422,7 +1440,22 @@ function shouldRenderToolItem(item, lifecycle) {
 function commandTitle(item, status) {
   if (String(item.source || "").toLowerCase() === "usershell") return "You ran";
   if (isRunningStatus(status)) return "Running";
-  return "Ran";
+  if (isSuccessStatus(status)) return "Command completed";
+  return "Command failed";
+}
+
+function commandSummary(item, status, output) {
+  const command = stripShellWrapper(item.command || "");
+  const verb = isRunningStatus(status) ? "Running" : isSuccessStatus(status) ? "Completed" : "Failed";
+  const bits = [verb, conciseCommand(command)];
+  if (item.exitCode !== null && item.exitCode !== undefined) bits.push(`exit ${item.exitCode}`);
+  if (output) bits.push(`${formatNumber(splitOutputLines(output).length)} output lines`);
+  return bits.filter(Boolean).join(" · ");
+}
+
+function conciseCommand(command) {
+  const normalized = String(command || "").trim().replace(/\s+/g, " ");
+  return truncateMiddle(normalized, 96);
 }
 
 function commandMeta(item, status) {
@@ -2078,12 +2111,14 @@ function renderChatStatus() {
   renderSessionStatus();
   renderContextStatus();
   renderLimitStatus();
+  renderPrimarySummary();
   syncActionAvailability();
   renderActivitySidebar();
 }
 
 function currentSessionStatus() {
   const bridge = state.codex.bridge;
+  if (bridge.lastError) return "Error";
   return state.codex.turnId ? "Working" : bridge.initialized ? "Ready" : bridge.running ? "Starting" : "Idle";
 }
 
@@ -2091,6 +2126,13 @@ function syncActionAvailability() {
   const running = Boolean(state.codex.turnId);
   els.interruptCodexTurn.hidden = !running;
   els.interruptCodexTurn.disabled = !running;
+}
+
+function toggleDetailsPanel() {
+  const open = !els.chatWorkbench.classList.contains("details-open");
+  els.chatWorkbench.classList.toggle("details-open", open);
+  els.detailsToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  els.detailsToggle.textContent = open ? "Hide details" : "Details";
 }
 
 function renderSessionStatus() {
@@ -2101,10 +2143,30 @@ function renderSessionStatus() {
   if (bridge.lastError) bits.push(bridge.lastError);
 
   els.chatSessionValue.textContent = status;
-  els.chatSessionValue.className = `session-pill ${sessionStatusClass(status)}`;
+  els.chatSessionValue.className = "sr-only";
   els.chatSessionMeta.textContent = bits.filter(Boolean).join(" · ");
-  els.chatSessionMeta.hidden = !els.chatSessionMeta.textContent;
+  els.chatSessionMeta.className = "sr-only";
+  els.chatSessionMeta.hidden = false;
   els.codexStatus.className = `status-pill ${sessionStatusClass(status)}`;
+}
+
+function renderPrimarySummary() {
+  const status = currentSessionStatus();
+  els.chatPrimaryStatus.textContent = state.codex.activity && status === "Working" ? state.codex.activity : status;
+  els.chatPrimaryStatus.className = sessionStatusClass(status);
+  els.chatPrimaryContext.textContent = compactContextLabel();
+  els.chatPrimaryModel.textContent = selectedModelLabel();
+  els.codexStatus.textContent = `${status} · ${compactContextLabel()}`;
+}
+
+function compactContextLabel() {
+  const value = els.chatContextValue.textContent || "";
+  const available = value.match(/Context\s+(\d+)%\s+available/i);
+  if (available) return `${available[1]}% context`;
+  if (/Context\s+waiting/i.test(value)) return "Context pending";
+  const context = value.match(/Context\s+(.+)/i);
+  if (context) return context[1].trim();
+  return "Context pending";
 }
 
 function renderActivitySidebar() {
@@ -2153,6 +2215,7 @@ function contextSidebarLabel() {
 
 function sessionStatusClass(status) {
   const normalized = String(status || "").toLowerCase();
+  if (normalized === "error") return "error";
   if (normalized === "working") return "working";
   if (normalized === "ready") return "ready";
   if (normalized === "starting") return "starting";
@@ -2517,6 +2580,7 @@ els.chatCwdButton.addEventListener("click", () => {
 els.chatModelButton.addEventListener("click", () => toggleChoiceMenu(els.chatModelMenu, els.chatModelButton));
 els.chatEffortButton.addEventListener("click", () => toggleChoiceMenu(els.chatEffortMenu, els.chatEffortButton));
 els.resumeMenuButton.addEventListener("click", toggleResumePopover);
+els.detailsToggle.addEventListener("click", toggleDetailsPanel);
 els.chatFastMode.addEventListener("change", () => {
   syncFastModeLabel();
   updateChatEmptyState();
@@ -2556,12 +2620,10 @@ els.chatLog.addEventListener("click", (event) => {
   if (collapseButton) {
     const card = collapseButton.closest(".tool-card");
     if (!card) return;
-    const willCollapse = !card.classList.contains("collapsed");
-    card.classList.toggle("collapsed", willCollapse);
-    collapseButton.textContent = willCollapse ? "Expand" : "Collapse";
-    for (const details of card.querySelectorAll("details")) {
-      details.open = !willCollapse;
-    }
+    const details = [...card.querySelectorAll("details")];
+    const anyOpen = details.some((item) => item.open);
+    for (const item of details) item.open = !anyOpen;
+    collapseButton.textContent = anyOpen ? "Show details" : "Collapse";
   }
 });
 els.resumeThreadId.addEventListener("keydown", (event) => {

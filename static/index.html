@@ -110,7 +110,7 @@
             <div class="sidebar-section">
               <div class="sidebar-heading">
                 <h3>Sessions</h3>
-                <span id="sidebarThreadCount">0</span>
+                <span id="sidebarThreadCount" class="count-badge">0</span>
               </div>
               <div class="sidebar-thread-list" id="sidebarThreads"></div>
             </div>
@@ -120,69 +120,16 @@
           <div class="chat-header">
             <div class="chat-title">
               <h2>Codex Chat</h2>
-              <div class="thread-line">
-                <span id="chatThread">No active thread</span>
-                <button id="copyThreadId" class="icon-button" type="button" title="Copy thread ID" disabled>Copy</button>
+              <div class="chat-summary-line" id="chatSummaryLine">
+                <span id="chatPrimaryStatus">Idle</span>
+                <span id="chatPrimaryContext">Context waiting</span>
+                <span id="chatPrimaryModel">Loading...</span>
               </div>
             </div>
             <div class="chat-actions">
               <button id="newCodexThread" class="button-secondary" type="button">New Thread</button>
-              <div class="resume-action">
-                <button id="resumeMenuButton" class="button-ghost" type="button" aria-haspopup="dialog" aria-expanded="false">Resume</button>
-                <div id="resumePopover" class="resume-popover" hidden>
-                  <input id="resumeThreadId" type="text" placeholder="Thread ID..." autocomplete="off" />
-                  <button id="resumeCodexThread" type="button">Confirm</button>
-                </div>
-              </div>
+              <button id="detailsToggle" class="button-ghost" type="button" aria-expanded="false">Details</button>
               <button id="interruptCodexTurn" class="button-danger" type="button" disabled hidden>Interrupt</button>
-            </div>
-          </div>
-          <div class="chat-toolbar" aria-label="Codex controls">
-            <div class="toolbar-section status-tools">
-              <span class="toolbar-label">Status</span>
-              <strong id="chatSessionValue" class="session-pill idle">Idle</strong>
-              <em id="chatSessionMeta" class="toolbar-note"></em>
-              <div class="inline-meter" title="Waiting for Codex token usage data after the first turn.">
-                <span class="meter-fill" id="chatContextBar"></span>
-                <strong id="chatContextValue">Context waiting</strong>
-                <small id="chatContextMeta"></small>
-              </div>
-              <div class="inline-meter">
-                <span class="meter-fill" id="chatLimitBar"></span>
-                <strong id="chatLimitValue">5h waiting</strong>
-                <small id="chatLimitMeta"></small>
-              </div>
-            </div>
-            <div class="toolbar-section env-tools">
-              <span class="toolbar-label">Environment</span>
-              <div class="choice-control cwd-control">
-                <input id="chatCwd" type="hidden" />
-                <button id="chatCwdButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
-                  <strong>Loading...</strong>
-                </button>
-                <div id="chatCwdMenu" class="choice-menu" role="menu" hidden></div>
-              </div>
-            </div>
-            <div class="toolbar-section setting-tools">
-              <span class="toolbar-label">Model</span>
-              <input id="chatModel" type="hidden" />
-              <input id="chatEffort" type="hidden" />
-              <div class="choice-control model-control">
-                <button id="chatModelButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
-                  <strong>Loading...</strong>
-                </button>
-                <div id="chatModelMenu" class="choice-menu" role="menu" hidden></div>
-              </div>
-              <div class="choice-control compact">
-                <button id="chatEffortButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
-                  <strong>Reasoning default</strong>
-                </button>
-                <div id="chatEffortMenu" class="choice-menu" role="menu" hidden></div>
-              </div>
-              <label class="fast-toggle">
-                <input id="chatFastMode" type="checkbox" />
-                <span id="chatFastLabel">Fast mode: Off</span>
-              </label>
             </div>
           </div>
           <div class="chat-log" id="chatLog"></div>
@@ -204,14 +151,70 @@
           </form>
           </section>
 
-          <aside class="chat-sidebar activity-sidebar" aria-label="Activity">
-            <div class="sidebar-section">
+          <aside class="chat-sidebar activity-sidebar" id="activitySidebar" aria-label="Session details">
+            <div class="sidebar-section session-details">
               <div class="sidebar-heading">
-                <h3>Task Status</h3>
+                <h3>Session Details</h3>
               </div>
               <div class="activity-card">
                 <strong id="sidebarTaskStatus">Idle</strong>
                 <span id="sidebarTaskMeta">No active thread</span>
+              </div>
+              <div class="details-stack">
+                <div class="thread-line">
+                  <span id="chatThread">No active thread</span>
+                  <button id="copyThreadId" class="icon-button" type="button" title="Copy thread ID" disabled>Copy</button>
+                </div>
+                <div class="resume-action">
+                  <button id="resumeMenuButton" class="button-ghost" type="button" aria-haspopup="dialog" aria-expanded="false">Resume thread</button>
+                  <div id="resumePopover" class="resume-popover" hidden>
+                    <input id="resumeThreadId" type="text" placeholder="Thread ID..." autocomplete="off" />
+                    <button id="resumeCodexThread" type="button">Confirm</button>
+                  </div>
+                </div>
+                <div class="inline-meter" title="Waiting for Codex token usage data after the first turn.">
+                  <span class="meter-fill" id="chatContextBar"></span>
+                  <strong id="chatContextValue">Context waiting</strong>
+                  <small id="chatContextMeta"></small>
+                </div>
+                <div class="inline-meter">
+                  <span class="meter-fill" id="chatLimitBar"></span>
+                  <strong id="chatLimitValue">5h waiting</strong>
+                  <small id="chatLimitMeta"></small>
+                </div>
+              </div>
+            </div>
+
+            <div class="sidebar-section">
+              <div class="sidebar-heading">
+                <h3>Configuration</h3>
+              </div>
+              <div class="inspector-controls">
+                <div class="choice-control cwd-control">
+                  <input id="chatCwd" type="hidden" />
+                  <button id="chatCwdButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
+                    <strong>Loading...</strong>
+                  </button>
+                  <div id="chatCwdMenu" class="choice-menu" role="menu" hidden></div>
+                </div>
+                <input id="chatModel" type="hidden" />
+                <input id="chatEffort" type="hidden" />
+                <div class="choice-control model-control">
+                  <button id="chatModelButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
+                    <strong>Loading...</strong>
+                  </button>
+                  <div id="chatModelMenu" class="choice-menu" role="menu" hidden></div>
+                </div>
+                <div class="choice-control compact">
+                  <button id="chatEffortButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
+                    <strong>Reasoning default</strong>
+                  </button>
+                  <div id="chatEffortMenu" class="choice-menu" role="menu" hidden></div>
+                </div>
+                <label class="fast-toggle">
+                  <input id="chatFastMode" type="checkbox" />
+                  <span id="chatFastLabel">Fast mode: Off</span>
+                </label>
               </div>
             </div>
 
@@ -232,16 +235,11 @@
               <div class="sidebar-mono" id="sidebarRunningCommand">None</div>
             </div>
 
-            <div class="sidebar-section">
-              <div class="sidebar-heading">
-                <h3>Model</h3>
-              </div>
-              <div class="sidebar-kv">
-                <div><span>Model</span><strong id="sidebarModel">Loading...</strong></div>
-                <div><span>Reasoning</span><strong id="sidebarReasoning">Default</strong></div>
-                <div><span>Context</span><strong id="sidebarContext">Waiting</strong></div>
-              </div>
-            </div>
+            <span id="chatSessionValue" class="sr-only">Idle</span>
+            <span id="chatSessionMeta" class="sr-only"></span>
+            <span id="sidebarModel" class="sr-only">Loading...</span>
+            <span id="sidebarReasoning" class="sr-only">Default</span>
+            <span id="sidebarContext" class="sr-only">Waiting</span>
           </aside>
         </div>
       </main>
