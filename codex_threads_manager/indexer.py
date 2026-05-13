@@ -89,6 +89,7 @@ class CodexThreadIndex:
         active = len(records) - archived
         return {
             "codexHome": str(self.codex_home),
+            "projectRoot": str(getattr(self, "project_root", "")),
             "statePath": str(self.state_path),
             "builtAt": self.built_at,
             "total": len(records),

@@ -46,6 +46,10 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
             self.serve_codex_events()
             return
 
+        if parsed.path == "/api/file":
+            self.serve_project_file(first(parse_qs(parsed.query), "path"))
+            return
+
         if parsed.path == "/api/threads":
             query = parse_qs(parsed.query)
             self.send_json(
@@ -276,6 +280,32 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def serve_project_file(self, requested_path: str | None) -> None:
+        if not requested_path:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "path is required")
+            return
+
+        raw_path = Path(requested_path).expanduser()
+        path = raw_path.resolve() if raw_path.is_absolute() else (PROJECT_ROOT / raw_path).resolve()
+        try:
+            path.relative_to(PROJECT_ROOT.resolve())
+        except ValueError:
+            self.send_error_json(HTTPStatus.FORBIDDEN, "file must be inside project root")
+            return
+
+        if not path.exists() or not path.is_file():
+            self.send_error_json(HTTPStatus.NOT_FOUND, "file not found")
+            return
+
+        body = path.read_bytes()
+        content_type = mimetypes.guess_type(path.name)[0] or "text/plain"
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", f"{content_type}; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def send_json(self, payload: object, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -328,6 +358,7 @@ def main(argv: list[str] | None = None) -> int:
     index = CodexThreadIndex(args.codex_home)
     index.rebuild()
     bridge = CodexBridge(PROJECT_ROOT)
+    index.project_root = PROJECT_ROOT
 
     server = ThreadingHTTPServer((args.host, args.port), make_handler(index, bridge))
     print(f"codex-web listening on http://{args.host}:{args.port}", flush=True)

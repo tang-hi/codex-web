@@ -29,6 +29,8 @@ const state = {
     planDeltas: {},
     approvalNodes: {},
     latestDiff: "",
+    changedFiles: [],
+    runningCommand: "",
   },
 };
 
@@ -37,7 +39,6 @@ const els = {
   chatTabButton: document.getElementById("chatTabButton"),
   threadsTab: document.getElementById("threadsTab"),
   chatTab: document.getElementById("chatTab"),
-  subtitle: document.getElementById("subtitle"),
   stats: document.getElementById("stats"),
   filters: document.getElementById("filters"),
   q: document.getElementById("q"),
@@ -49,8 +50,10 @@ const els = {
   emptyState: document.getElementById("emptyState"),
   details: document.getElementById("details"),
   rebuildButton: document.getElementById("rebuildButton"),
+  appWorkspace: document.getElementById("appWorkspace"),
   codexStatus: document.getElementById("codexStatus"),
   chatThread: document.getElementById("chatThread"),
+  copyThreadId: document.getElementById("copyThreadId"),
   chatSessionValue: document.getElementById("chatSessionValue"),
   chatSessionMeta: document.getElementById("chatSessionMeta"),
   chatContextValue: document.getElementById("chatContextValue"),
@@ -63,6 +66,7 @@ const els = {
   chatLog: document.getElementById("chatLog"),
   chatComposer: document.getElementById("chatComposer"),
   chatInput: document.getElementById("chatInput"),
+  sendCodexMessage: document.getElementById("sendCodexMessage"),
   chatCwdButton: document.getElementById("chatCwdButton"),
   chatCwdMenu: document.getElementById("chatCwdMenu"),
   chatModel: document.getElementById("chatModel"),
@@ -79,6 +83,16 @@ const els = {
   resumePopover: document.getElementById("resumePopover"),
   resumeThreadId: document.getElementById("resumeThreadId"),
   interruptCodexTurn: document.getElementById("interruptCodexTurn"),
+  sidebarThreadCount: document.getElementById("sidebarThreadCount"),
+  sidebarThreads: document.getElementById("sidebarThreads"),
+  sidebarTaskStatus: document.getElementById("sidebarTaskStatus"),
+  sidebarTaskMeta: document.getElementById("sidebarTaskMeta"),
+  sidebarChangedCount: document.getElementById("sidebarChangedCount"),
+  sidebarChangedFiles: document.getElementById("sidebarChangedFiles"),
+  sidebarRunningCommand: document.getElementById("sidebarRunningCommand"),
+  sidebarModel: document.getElementById("sidebarModel"),
+  sidebarReasoning: document.getElementById("sidebarReasoning"),
+  sidebarContext: document.getElementById("sidebarContext"),
 };
 
 let searchTimer = null;
@@ -105,7 +119,27 @@ function createMarkdownRenderer() {
     return defaultLinkOpen(tokens, idx, options, env, self);
   };
 
+  renderer.renderer.rules.fence = function (tokens, idx) {
+    const token = tokens[idx];
+    const lang = String(token.info || "").trim().split(/\s+/)[0];
+    return codeBlockHtml(token.content, lang);
+  };
+
   return renderer;
+}
+
+function codeBlockHtml(content, lang = "") {
+  const language = String(lang || "").trim();
+  const label = language || "code";
+  return `
+    <div class="code-block">
+      <div class="code-block-header">
+        <span>${escapeHtml(label)}</span>
+        <button type="button" class="copy-code-button" data-copy-code="${escapeAttr(encodeURIComponent(content))}">Copy</button>
+      </div>
+      <pre><code class="${language ? `language-${escapeAttr(language)}` : ""}">${escapeHtml(content)}</code></pre>
+    </div>
+  `;
 }
 
 function setTokenAttr(token, name, value) {
@@ -160,7 +194,12 @@ function params() {
 
 async function loadStats() {
   const stats = await api("/api/stats");
-  els.subtitle.textContent = `${stats.codexHome} · indexed ${formatNumber(stats.total)} threads`;
+  if (stats.projectRoot && !els.chatCwd.value) {
+    els.chatCwd.value = stats.projectRoot;
+    syncCwdButton();
+  } else if (!els.chatCwd.value) {
+    setWorkspaceLabel(stats.codexHome || "");
+  }
   els.stats.innerHTML = `
     <div><b>${formatNumber(stats.total)}</b><span>Total</span></div>
     <div><b>${formatNumber(stats.active)}</b><span>Active</span></div>
@@ -210,22 +249,73 @@ function populateChatCwdSelect(values) {
       description: `${item.count} threads`,
     }));
 
+  if (current && !items.some((item) => item.value === current)) {
+    els.chatCwd.value = current;
+  } else if (!current && items.length > 0) {
+    els.chatCwd.value = items[0].value;
+  }
+  renderChatCwdMenu(items, els.chatCwd.value);
+  syncCwdButton();
+}
+
+function renderChatCwdMenu(items, selectedValue) {
+  const menu = els.chatCwdMenu;
+  menu.innerHTML = "";
+
+  const customRow = document.createElement("div");
+  customRow.className = "choice-menu-custom";
+  customRow.innerHTML = `
+    <input type="text" class="custom-cwd-input" placeholder="Type a working directory..." spellcheck="false" autocomplete="off" />
+    <button type="button" class="custom-cwd-use">Use</button>
+  `;
+  const input = customRow.querySelector("input");
+  const useButton = customRow.querySelector("button");
+  input.value = selectedValue || "";
+  const commit = () => {
+    const value = input.value.trim();
+    if (!value) return;
+    selectCwd(value);
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeChoiceMenus();
+    }
+  });
+  useButton.addEventListener("click", commit);
+  menu.appendChild(customRow);
+
   if (items.length === 0) {
-    els.chatCwd.value = "";
-    renderChoiceMenu(els.chatCwdMenu, [{ value: "", label: "No directories found", description: "" }], "", () => {});
-    syncCwdButton();
+    const empty = document.createElement("div");
+    empty.className = "choice-menu-empty";
+    empty.textContent = "No indexed directories yet. Type a path above.";
+    menu.appendChild(empty);
     return;
   }
 
-  const hasCurrent = items.some((item) => item.value === current);
-  els.chatCwd.value = hasCurrent ? current : items[0].value;
-  renderChoiceMenu(els.chatCwdMenu, items, els.chatCwd.value, selectCwd);
-  syncCwdButton();
+  for (const item of items) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "choice-menu-item";
+    button.dataset.value = item.value || "";
+    button.setAttribute("role", "menuitemradio");
+    button.innerHTML = `
+      <strong>${escapeHtml(item.label)}</strong>
+      ${item.description ? `<span>${escapeHtml(item.description)}</span>` : ""}
+    `;
+    button.addEventListener("click", () => selectCwd(item.value));
+    menu.appendChild(button);
+  }
+  markChoiceMenuSelection(menu, selectedValue);
 }
 
 function renderRows() {
   els.threadRows.innerHTML = "";
   els.emptyState.hidden = state.items.length !== 0;
+  renderSidebarThreads();
 
   for (const item of state.items) {
     const tr = document.createElement("tr");
@@ -250,6 +340,34 @@ function renderRows() {
     });
     tr.querySelector("button").addEventListener("click", () => selectThread(item.id));
     els.threadRows.appendChild(tr);
+  }
+}
+
+function renderSidebarThreads() {
+  els.sidebarThreads.innerHTML = "";
+  const items = state.items.slice(0, 12);
+  els.sidebarThreadCount.textContent = formatNumber(state.items.length);
+
+  if (!items.length) {
+    els.sidebarThreads.innerHTML = '<span class="sidebar-empty">No recent sessions.</span>';
+    return;
+  }
+
+  for (const item of items) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `sidebar-thread ${item.id === state.codex.threadId ? "active" : ""}`;
+    button.title = item.id;
+    button.innerHTML = `
+      <strong>${escapeHtml(item.title || item.preview || shortId(item.id))}</strong>
+      <span>${escapeHtml(shortPath(item.cwd) || "No directory")}</span>
+      <em>${escapeHtml(formatDate(item.updatedAtIso || item.fileMtimeIso))}</em>
+    `;
+    button.addEventListener("click", () => {
+      els.resumeThreadId.value = item.id;
+      resumeCodexThreadById().catch((error) => appendChatLine("error", error.message));
+    });
+    els.sidebarThreads.appendChild(button);
   }
 }
 
@@ -398,9 +516,12 @@ function selectCwd(value) {
 function syncCwdButton() {
   const value = els.chatCwd.value;
   const label = value ? shortPath(value) : "No directory";
-  els.chatCwdButton.querySelector("strong").textContent = `Working Directory: ${label}`;
+  els.chatCwdButton.querySelector("strong").textContent = label;
   els.chatCwdButton.title = value || label;
+  setWorkspaceLabel(value || label);
   markChoiceMenuSelection(els.chatCwdMenu, value);
+  updateChatEmptyState();
+  renderActivitySidebar();
 }
 
 function updateEffortOptions() {
@@ -443,15 +564,19 @@ function selectEffort(value) {
 function syncModelButton() {
   const model = selectedModelInfo();
   const label = model ? model.displayName || model.model || model.id : "Model";
-  els.chatModelButton.querySelector("strong").textContent = `Model: ${label}`;
+  els.chatModelButton.querySelector("strong").textContent = label;
   els.chatModelButton.title = model?.description || label;
   markChoiceMenuSelection(els.chatModelMenu, els.chatModel.value);
+  updateChatEmptyState();
+  renderActivitySidebar();
 }
 
 function syncEffortButton() {
-  const label = els.chatEffort.value || "Default";
+  const label = displayReasoningEffort(els.chatEffort.value);
   els.chatEffortButton.querySelector("strong").textContent = `Reasoning: ${label}`;
   markChoiceMenuSelection(els.chatEffortMenu, els.chatEffort.value);
+  updateChatEmptyState();
+  renderActivitySidebar();
 }
 
 function renderChoiceMenu(menu, items, selectedValue, onSelect) {
@@ -517,10 +642,17 @@ function updateFastModeControl() {
   const tier = selectedFastTier();
   els.chatFastMode.disabled = !tier;
   els.chatFastMode.checked = Boolean(tier);
-  els.chatFastLabel.textContent = tier ? "Fast" : "Fast unavailable";
   els.chatFastLabel.title = tier ? tier.description || tier.name || tier.id || "Fast" : "";
-  els.chatFastMode.closest(".fast-toggle").classList.toggle("on", els.chatFastMode.checked && !els.chatFastMode.disabled);
-  els.chatFastMode.closest(".fast-toggle").classList.toggle("disabled", els.chatFastMode.disabled);
+  syncFastModeLabel();
+  updateChatEmptyState();
+}
+
+function syncFastModeLabel() {
+  const tier = selectedFastTier();
+  const available = Boolean(tier) && !els.chatFastMode.disabled;
+  els.chatFastLabel.textContent = available ? `Fast mode: ${els.chatFastMode.checked ? "On" : "Off"}` : "Fast mode unavailable";
+  els.chatFastMode.closest(".fast-toggle").classList.toggle("on", els.chatFastMode.checked && available);
+  els.chatFastMode.closest(".fast-toggle").classList.toggle("disabled", !available);
 }
 
 function selectedFastTier() {
@@ -530,6 +662,22 @@ function selectedFastTier() {
   if (serviceTiers.length > 0) return serviceTiers[0];
   const legacyTier = (model.additionalSpeedTiers || [])[0];
   return legacyTier ? { id: legacyTier, name: "Fast", description: legacyTier } : null;
+}
+
+function displayReasoningEffort(value) {
+  const normalized = String(value || "").toLowerCase();
+  const labels = {
+    low: "Low",
+    medium: "Medium",
+    high: "High",
+    xhigh: "Extra high",
+  };
+  return labels[normalized] || (value ? titleCase(value) : "Default");
+}
+
+function selectedModelLabel() {
+  const model = selectedModelInfo();
+  return model ? model.displayName || model.model || model.id : els.chatModel.value || "Loading...";
 }
 
 function chatOptions() {
@@ -595,7 +743,7 @@ function handleCodexEvent(event) {
   }
   if (method === "turn/started") {
     state.codex.turnId = params.turn && params.turn.id;
-    els.interruptCodexTurn.disabled = !state.codex.turnId;
+    syncActionAvailability();
     setChatActivity("Working");
     return;
   }
@@ -605,7 +753,7 @@ function handleCodexEvent(event) {
       appendChatLine("error", `Turn ${status}`);
     }
     state.codex.turnId = null;
-    els.interruptCodexTurn.disabled = true;
+    syncActionAvailability();
     setChatActivity("");
     return;
   }
@@ -716,6 +864,7 @@ async function sendCodexMessage(event) {
   if (!text) return;
   els.chatInput.value = "";
   autoSizeChatInput();
+  updateComposerState();
   appendChatLine("user", text);
 
   try {
@@ -827,7 +976,7 @@ function ensureAgentMessage(itemId) {
   entry.dataset.raw = "";
   const gutter = document.createElement("div");
   gutter.className = "transcript-gutter";
-  gutter.textContent = "codex";
+  gutter.textContent = "Codex";
   const body = document.createElement("div");
   body.className = "transcript-body markdown-body";
   entry.append(gutter, body);
@@ -903,8 +1052,25 @@ function upsertCodexItem(item, lifecycle) {
   }
   card.className = `tool-card ${safeId(item.type)} ${statusClass(item.status || lifecycle)}`;
 
+  syncToolSidebarState(item, lifecycle);
   card.innerHTML = toolItemHtml(item, lifecycle);
   scrollChatToBottom();
+}
+
+function syncToolSidebarState(item, lifecycle) {
+  if (item.type === "commandExecution") {
+    const command = stripShellWrapper(item.command || "");
+    state.codex.runningCommand = isRunningStatus(item.status || lifecycle) ? command : "";
+  }
+  if (item.type === "fileChange" && (item.changes || []).length) {
+    setChangedFiles(
+      item.changes.map((change) => ({
+        path: change.path || "",
+        kind: change.kind || "modify",
+      })),
+    );
+  }
+  renderActivitySidebar();
 }
 
 function upsertReasoningItem(item, lifecycle) {
@@ -977,6 +1143,7 @@ function renderFileChangePatch(params) {
 function renderDiffCard(diff, title = "Diff") {
   const text = String(diff || "").trim();
   if (!text) return;
+  setChangedFiles(parseDiffFiles(text));
   const diffHtml = diffToHtml(text);
 
   let card = document.getElementById("latest-diff-card");
@@ -987,7 +1154,14 @@ function renderDiffCard(diff, title = "Diff") {
     els.chatLog.appendChild(card);
   }
   card.innerHTML = `
-    <div class="tool-title"><span>${escapeHtml(title)}</span><em>${formatNumber(text.split("\n").length)} lines</em></div>
+    <div class="tool-title">
+      <span>${escapeHtml(codeChangeTitle(title, state.codex.changedFiles))}</span>
+      <div class="tool-actions">
+        <button type="button" data-copy-tool="${escapeAttr(encodeURIComponent(text))}">Copy</button>
+        <button type="button" data-collapse-tool>Collapse</button>
+      </div>
+      <em>${formatNumber(text.split("\n").length)} lines</em>
+    </div>
     ${diffHtml}
   `;
   scrollChatToBottom();
@@ -1049,16 +1223,32 @@ function toolItemHtml(item, lifecycle) {
     `;
   }
   if (item.type === "fileChange") {
+    const changeItems = item.changes || [];
+    const primaryPath = changeItems[0]?.path || "";
+    const combinedDiff = changeItems.map((change) => change.diff || "").filter(Boolean).join("\n\n");
     const changes = (item.changes || [])
-      .map((change) => `<li><strong>${escapeHtml(fileChangeKind(change.kind))}</strong> ${escapeHtml(change.path || "")}</li>`)
+      .map(
+        (change) =>
+          `<li title="${escapeAttr(change.path || "")}"><strong>${escapeHtml(fileChangeVerb(change.kind))}</strong> ${escapeHtml(relativeProjectPath(change.path || ""))}</li>`,
+      )
       .join("");
     const diffs = (item.changes || [])
       .map((change) =>
-        change.diff ? `<details class="diff-details" open><summary>${escapeHtml(change.path || "diff")}</summary>${diffToHtml(change.diff)}</details>` : "",
+        change.diff
+          ? `<details class="diff-details" open><summary>${escapeHtml(relativeProjectPath(change.path || "diff"))}</summary>${diffToHtml(change.diff)}</details>`
+          : "",
       )
       .join("");
     return `
-      <div class="tool-title"><span>Patch</span><em>${escapeHtml(statusLabel(status))}</em></div>
+      <div class="tool-title">
+        <span>${escapeHtml(codeChangeTitle("Patch", changeItems))}</span>
+        <div class="tool-actions">
+          ${combinedDiff ? `<button type="button" data-copy-tool="${escapeAttr(encodeURIComponent(combinedDiff))}">Copy</button>` : ""}
+          ${primaryPath ? `<button type="button" data-view-file="${escapeAttr(primaryPath)}" title="${escapeAttr(primaryPath)}">View file</button>` : ""}
+          <button type="button" data-collapse-tool>Collapse</button>
+        </div>
+        <em>${escapeHtml(statusLabel(status))}</em>
+      </div>
       ${changes ? `<ul class="change-list">${changes}</ul>` : '<div class="tool-empty">(no file changes)</div>'}
       ${diffs}
     `;
@@ -1129,11 +1319,12 @@ function commandFromCard(card) {
 function commandOutputHtml(output, command) {
   const preview = commandOutputPreview(output, command);
   const classes = ["tool-output-wrap", preview.truncated ? "truncated" : ""].filter(Boolean).join(" ");
+  const label = preview.truncated ? commandOutputMeta(preview) : `${formatNumber(preview.totalLines)} output lines`;
   return `
-    <div class="${classes}">
-      ${preview.truncated ? `<div class="tool-output-meta">${escapeHtml(commandOutputMeta(preview))}</div>` : ""}
+    <details class="${classes}" open>
+      <summary>${escapeHtml(label)}</summary>
       <pre class="tool-output">${escapeHtml(preview.text)}</pre>
-    </div>
+    </details>
   `;
 }
 
@@ -1293,6 +1484,14 @@ function fileChangeKind(kind) {
   return "M";
 }
 
+function fileChangeVerb(kind) {
+  const value = String(typeof kind === "object" && kind ? kind.type || "change" : kind || "change").toLowerCase();
+  if (value.includes("add")) return "Added";
+  if (value.includes("delete") || value.includes("remove")) return "Deleted";
+  if (value.includes("rename") || value.includes("move")) return "Renamed";
+  return "Modified";
+}
+
 function jsonDetails(label, value, open = false) {
   if (value === null || value === undefined || value === "") return "";
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
@@ -1387,8 +1586,48 @@ function diffLineClass(line) {
   return "context";
 }
 
+function setChangedFiles(files) {
+  const seen = new Map();
+  for (const file of files || []) {
+    const path = file.path || "";
+    if (!path) continue;
+    seen.set(path, { path, kind: file.kind || seen.get(path)?.kind || "modify" });
+  }
+  state.codex.changedFiles = [...seen.values()];
+  renderActivitySidebar();
+}
+
+function parseDiffFiles(diff) {
+  const files = [];
+  for (const line of String(diff || "").split("\n")) {
+    const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+    if (!match) continue;
+    files.push({ path: match[2] || match[1], kind: "modify" });
+  }
+  return files;
+}
+
+function codeChangeTitle(title, files) {
+  const changed = files || [];
+  if (changed.length === 1) {
+    return `${fileChangeVerb(changed[0].kind)} file · ${relativeProjectPath(changed[0].path)}`;
+  }
+  if (changed.length > 1) {
+    return `Code changes · ${formatNumber(changed.length)} files`;
+  }
+  return title === "Patch" || title === "Diff" ? "Code change" : title;
+}
+
 function renderChatThreadLine() {
-  els.chatThread.textContent = state.codex.threadId || "No active thread";
+  if (state.codex.threadId) {
+    els.chatThread.textContent = `Thread ${shortId(state.codex.threadId)}`;
+    els.chatThread.title = state.codex.threadId;
+    els.copyThreadId.disabled = false;
+  } else {
+    els.chatThread.textContent = "No active thread";
+    els.chatThread.title = "";
+    els.copyThreadId.disabled = true;
+  }
   renderChatStatus();
 }
 
@@ -1432,7 +1671,7 @@ function basicMarkdownToHtml(source) {
     const fence = line.match(/^```(\w+)?/);
     if (fence) {
       if (inCode) {
-        html.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+        html.push(codeBlockHtml(codeLines.join("\n"), ""));
         codeLines = [];
         inCode = false;
       } else {
@@ -1485,7 +1724,7 @@ function basicMarkdownToHtml(source) {
   }
 
   if (inCode) {
-    html.push(`<pre><code>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
+    html.push(codeBlockHtml(codeLines.join("\n"), ""));
   }
   closeList();
   return html.join("");
@@ -1757,6 +1996,8 @@ function textFromContent(value) {
 function setActiveThread(id) {
   state.codex.threadId = id;
   renderChatThreadLine();
+  renderSidebarThreads();
+  renderActivitySidebar();
 }
 
 function resetChatTranscript() {
@@ -1771,10 +2012,54 @@ function resetChatTranscript() {
   state.codex.planDeltas = {};
   state.codex.approvalNodes = {};
   state.codex.latestDiff = "";
+  state.codex.changedFiles = [];
+  state.codex.runningCommand = "";
   state.codex.tokenUsage = null;
-  els.interruptCodexTurn.disabled = true;
+  syncActionAvailability();
   renderChatThreadLine();
+  renderChatEmptyState();
   renderChatStatus();
+}
+
+function chatHasMessages() {
+  return Array.from(els.chatLog.children).some((node) => node.id !== "chatEmptyState");
+}
+
+function renderChatEmptyState() {
+  let empty = document.getElementById("chatEmptyState");
+  if (!empty) {
+    empty = document.createElement("section");
+    empty.id = "chatEmptyState";
+    empty.className = "chat-empty-state";
+    els.chatLog.prepend(empty);
+  }
+  updateChatEmptyState();
+}
+
+function updateChatEmptyState() {
+  const empty = document.getElementById("chatEmptyState");
+  if (!empty) return;
+  empty.hidden = chatHasMessages();
+  if (empty.hidden) return;
+
+  const cwd = shortPath(els.chatCwd.value) || "No working directory selected";
+  const modelLabel = selectedModelLabel();
+  const effort = displayReasoningEffort(els.chatEffort.value);
+  empty.innerHTML = `
+    <div class="empty-copy">
+      <h3>What should Codex work on?</h3>
+      <dl>
+        <div><dt>Working directory</dt><dd title="${escapeAttr(els.chatCwd.value || cwd)}">${escapeHtml(cwd)}</dd></div>
+        <div><dt>Model</dt><dd>${escapeHtml(modelLabel)}</dd></div>
+        <div><dt>Reasoning</dt><dd>${escapeHtml(effort)}</dd></div>
+      </dl>
+    </div>
+    <div class="empty-prompts" aria-label="Example prompts">
+      <button type="button" data-prompt="Explain the current architecture">Explain the current architecture</button>
+      <button type="button" data-prompt="Implement a new feature">Implement a new feature</button>
+      <button type="button" data-prompt="Fix failing tests">Fix failing tests</button>
+    </div>
+  `;
 }
 
 function setCodexStatus(text) {
@@ -1793,18 +2078,77 @@ function renderChatStatus() {
   renderSessionStatus();
   renderContextStatus();
   renderLimitStatus();
+  syncActionAvailability();
+  renderActivitySidebar();
+}
+
+function currentSessionStatus() {
+  const bridge = state.codex.bridge;
+  return state.codex.turnId ? "Working" : bridge.initialized ? "Ready" : bridge.running ? "Starting" : "Idle";
+}
+
+function syncActionAvailability() {
+  const running = Boolean(state.codex.turnId);
+  els.interruptCodexTurn.hidden = !running;
+  els.interruptCodexTurn.disabled = !running;
 }
 
 function renderSessionStatus() {
   const bridge = state.codex.bridge;
-  const status = state.codex.turnId ? "Working" : bridge.initialized ? "Ready" : bridge.running ? "Starting" : "Idle";
+  const status = currentSessionStatus();
   const bits = [];
   if (state.codex.activity && state.codex.activity !== status) bits.push(state.codex.activity);
   if (bridge.lastError) bits.push(bridge.lastError);
 
-  els.chatSessionValue.innerHTML = escapeHtml(status);
+  els.chatSessionValue.textContent = status;
   els.chatSessionValue.className = `session-pill ${sessionStatusClass(status)}`;
   els.chatSessionMeta.textContent = bits.filter(Boolean).join(" · ");
+  els.chatSessionMeta.hidden = !els.chatSessionMeta.textContent;
+  els.codexStatus.className = `status-pill ${sessionStatusClass(status)}`;
+}
+
+function renderActivitySidebar() {
+  const status = currentSessionStatus();
+  const meta = [state.codex.activity, state.codex.threadId ? `Thread ${shortId(state.codex.threadId)}` : "No active thread"]
+    .filter(Boolean)
+    .join(" · ");
+
+  els.sidebarTaskStatus.textContent = status;
+  els.sidebarTaskStatus.className = sessionStatusClass(status);
+  els.sidebarTaskMeta.textContent = meta;
+  els.sidebarRunningCommand.textContent = state.codex.runningCommand || "None";
+  els.sidebarRunningCommand.title = state.codex.runningCommand || "";
+  els.sidebarModel.textContent = selectedModelLabel();
+  els.sidebarReasoning.textContent = displayReasoningEffort(els.chatEffort.value);
+  els.sidebarContext.textContent = contextSidebarLabel();
+  renderChangedFilesSidebar();
+}
+
+function renderChangedFilesSidebar() {
+  const files = state.codex.changedFiles || [];
+  els.sidebarChangedCount.textContent = formatNumber(files.length);
+  els.sidebarChangedFiles.innerHTML = "";
+
+  if (!files.length) {
+    els.sidebarChangedFiles.innerHTML = '<span class="sidebar-empty">No file changes yet.</span>';
+    return;
+  }
+
+  for (const file of files.slice(0, 8)) {
+    const row = document.createElement("div");
+    row.className = "sidebar-file";
+    row.title = file.path || "";
+    row.innerHTML = `
+      <strong>${escapeHtml(fileChangeVerb(file.kind))}</strong>
+      <span>${escapeHtml(relativeProjectPath(file.path || ""))}</span>
+    `;
+    els.sidebarChangedFiles.appendChild(row);
+  }
+}
+
+function contextSidebarLabel() {
+  const text = (els.chatContextValue.textContent || "").replace(/^Context\s*/i, "");
+  return text || "Waiting";
 }
 
 function sessionStatusClass(status) {
@@ -1835,13 +2179,17 @@ function renderContextStatus() {
     } else {
       els.chatContextValue.textContent = "Context waiting";
       els.chatContextMeta.textContent = "";
+      els.chatContextValue.closest(".inline-meter").title = "Waiting for Codex token usage data after the first turn.";
     }
     setMeter(els.chatContextBar, 0, "empty");
     return;
   }
 
-  els.chatContextValue.textContent = `Context ${Math.round(percent)}% ${formatCompactNumber(used)}/${formatCompactNumber(windowTokens)}`;
+  const remaining = clamp(100 - percent, 0, 100);
+  els.chatContextValue.textContent = `Context ${Math.round(remaining)}% available`;
   els.chatContextMeta.textContent = "";
+  els.chatContextValue.closest(".inline-meter").title =
+    `${formatCompactNumber(used)} of ${formatCompactNumber(windowTokens)} tokens currently in context`;
   setMeter(els.chatContextBar, percent, "used");
 }
 
@@ -1858,17 +2206,21 @@ function contextPercentUsed(tokens, windowTokens) {
 
 function renderLimitStatus() {
   const limit = preferredRateLimit(state.codex.rateLimits);
+  const meter = els.chatLimitValue.closest(".inline-meter");
   if (!limit) {
-    els.chatLimitValue.textContent = state.codex.rateLimitError ? "5h unavailable" : "5h waiting";
+    els.chatLimitValue.textContent = state.codex.rateLimitError ? "No time estimate" : "5h remaining";
     els.chatLimitMeta.textContent = "";
+    meter.title = state.codex.rateLimitError ? readableLimitError(state.codex.rateLimitError) : "Waiting for Codex usage limit data.";
     setMeter(els.chatLimitBar, 0, "empty");
     return;
   }
 
   const percent = limit.usedPercent !== null && limit.usedPercent !== undefined ? clamp(limit.usedPercent, 0, 100) : null;
   const remaining = percent === null ? null : clamp(100 - percent, 0, 100);
-  els.chatLimitValue.textContent = remaining === null ? "5h reported" : `5h ${Math.round(remaining)}% left`;
+  const windowLabel = limit.windowLabel || "5h";
+  els.chatLimitValue.textContent = remaining === null ? `${windowLabel} remaining` : `${windowLabel} remaining · ${Math.round(remaining)}%`;
   els.chatLimitMeta.textContent = "";
+  meter.title = [limit.name, limit.resetLabel].filter(Boolean).join(" · ") || windowLabel;
   setMeter(els.chatLimitBar, remaining || 0, "remaining");
 }
 
@@ -1885,6 +2237,7 @@ function setMeter(node, percent, mode = "used") {
 }
 
 function scrollChatToBottom() {
+  updateChatEmptyState();
   els.chatLog.scrollTop = els.chatLog.scrollHeight;
 }
 
@@ -1905,14 +2258,38 @@ function copyText(text) {
   navigator.clipboard.writeText(text).catch(() => {});
 }
 
+function setWorkspaceLabel(path) {
+  const value = path || "No workspace selected";
+  els.appWorkspace.textContent = shortPath(value) || value;
+  els.appWorkspace.closest(".workspace-chip").title = value;
+}
+
+function updateComposerState() {
+  els.sendCodexMessage.disabled = !els.chatInput.value.trim();
+}
+
 function shortPath(path) {
   if (!path) return "";
   return path.replace(/^\/home\/[^/]+/, "~");
 }
 
+function relativeProjectPath(path) {
+  const value = String(path || "");
+  if (!value) return "";
+  const cwd = els.chatCwd.value || "";
+  if (cwd && value.startsWith(`${cwd}/`)) return value.slice(cwd.length + 1);
+  return value.replace(/^\/home\/[^/]+\/projects\/[^/]+\//, "");
+}
+
 function shortId(value) {
   const text = String(value || "");
-  return text.length > 12 ? `${text.slice(0, 8)}...${text.slice(-4)}` : text;
+  return text.length > 12 ? `${text.slice(0, 8)}…${text.slice(-5)}` : text;
+}
+
+function titleCase(value) {
+  return String(value || "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function sourceLabel(item) {
@@ -2104,10 +2481,10 @@ function escapeAttr(value) {
 
 function autoSizeChatInput() {
   const input = els.chatInput;
-  const maxHeight = Math.min(220, Math.max(120, Math.round(window.innerHeight * 0.32)));
+  const maxHeight = Math.min(180, Math.max(96, Math.round(window.innerHeight * 0.28)));
   input.style.maxHeight = `${maxHeight}px`;
   input.style.height = "auto";
-  const nextHeight = Math.min(input.scrollHeight, maxHeight);
+  const nextHeight = Math.min(Math.max(input.scrollHeight, 44), maxHeight);
   input.style.height = `${nextHeight}px`;
   input.style.overflowY = input.scrollHeight > maxHeight ? "auto" : "hidden";
 }
@@ -2119,19 +2496,73 @@ els.chatTabButton.addEventListener("click", () => switchTab("chat"));
 els.rebuildButton.addEventListener("click", () => rebuild().catch(showError));
 els.chatComposer.addEventListener("submit", sendCodexMessage);
 els.chatInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+  if (event.key === "Enter" && !event.isComposing && (event.metaKey || event.ctrlKey || !event.shiftKey)) {
     event.preventDefault();
     els.chatComposer.requestSubmit();
   }
 });
 els.chatInput.addEventListener("input", autoSizeChatInput);
+els.chatInput.addEventListener("input", updateComposerState);
 window.addEventListener("resize", autoSizeChatInput);
-els.chatCwdButton.addEventListener("click", () => toggleChoiceMenu(els.chatCwdMenu, els.chatCwdButton));
+els.chatCwdButton.addEventListener("click", () => {
+  toggleChoiceMenu(els.chatCwdMenu, els.chatCwdButton);
+  if (!els.chatCwdMenu.hidden) {
+    const input = els.chatCwdMenu.querySelector(".custom-cwd-input");
+    if (input) {
+      input.focus();
+      input.select();
+    }
+  }
+});
 els.chatModelButton.addEventListener("click", () => toggleChoiceMenu(els.chatModelMenu, els.chatModelButton));
 els.chatEffortButton.addEventListener("click", () => toggleChoiceMenu(els.chatEffortMenu, els.chatEffortButton));
 els.resumeMenuButton.addEventListener("click", toggleResumePopover);
 els.chatFastMode.addEventListener("change", () => {
-  els.chatFastMode.closest(".fast-toggle").classList.toggle("on", els.chatFastMode.checked && !els.chatFastMode.disabled);
+  syncFastModeLabel();
+  updateChatEmptyState();
+});
+els.copyThreadId.addEventListener("click", () => {
+  if (state.codex.threadId) copyText(state.codex.threadId);
+});
+els.chatLog.addEventListener("click", (event) => {
+  const target = event.target instanceof Element ? event.target : null;
+  const promptButton = target?.closest("[data-prompt]");
+  if (promptButton) {
+    els.chatInput.value = promptButton.getAttribute("data-prompt") || "";
+    autoSizeChatInput();
+    updateComposerState();
+    els.chatInput.focus();
+    return;
+  }
+  const copyButton = target?.closest(".copy-code-button");
+  if (copyButton) {
+    const encoded = copyButton.getAttribute("data-copy-code") || "";
+    copyText(decodeURIComponent(encoded));
+    return;
+  }
+  const toolCopyButton = target?.closest("[data-copy-tool]");
+  if (toolCopyButton) {
+    const encoded = toolCopyButton.getAttribute("data-copy-tool") || "";
+    copyText(decodeURIComponent(encoded));
+    return;
+  }
+  const viewFileButton = target?.closest("[data-view-file]");
+  if (viewFileButton) {
+    const path = viewFileButton.getAttribute("data-view-file") || "";
+    window.open(`/api/file?path=${encodeURIComponent(path)}`, "_blank", "noreferrer");
+    return;
+  }
+  const collapseButton = target?.closest("[data-collapse-tool]");
+  if (collapseButton) {
+    const card = collapseButton.closest(".tool-card");
+    if (!card) return;
+    const willCollapse = !card.classList.contains("collapsed");
+    card.classList.toggle("collapsed", willCollapse);
+    collapseButton.textContent = willCollapse ? "Expand" : "Collapse";
+    for (const details of card.querySelectorAll("details")) {
+      details.open = !willCollapse;
+    }
+  }
 });
 els.resumeThreadId.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
@@ -2152,6 +2583,8 @@ els.resumeCodexThread.addEventListener("click", () =>
   resumeCodexThreadById().catch((error) => appendChatLine("error", error.message)),
 );
 els.interruptCodexTurn.addEventListener("click", interruptCodexTurn);
+renderChatEmptyState();
+updateComposerState();
 autoSizeChatInput();
 
 loadStats()
