@@ -1,6 +1,6 @@
-# codex-threads-manager
+# Codex Web
 
-一个只读的本地 Codex threads 浏览器。第一版目标很简单：
+一个本地 Codex Web 控制台。第一版目标很简单：
 
 - 扫描 `~/.codex/state_5.sqlite`
 - 补充扫描 `~/.codex/sessions` 和 `~/.codex/archived_sessions`
@@ -12,7 +12,7 @@
 ## 启动
 
 ```bash
-cd /home/dhtang/projects/codex-threads-manager
+cd codex-web
 python3 -m codex_threads_manager.server
 ```
 

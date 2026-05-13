@@ -330,7 +330,7 @@ def main(argv: list[str] | None = None) -> int:
     bridge = CodexBridge(PROJECT_ROOT)
 
     server = ThreadingHTTPServer((args.host, args.port), make_handler(index, bridge))
-    print(f"codex-threads-manager listening on http://{args.host}:{args.port}", flush=True)
+    print(f"codex-web listening on http://{args.host}:{args.port}", flush=True)
     print(f"reading Codex data from {index.codex_home}", flush=True)
     try:
         server.serve_forever()

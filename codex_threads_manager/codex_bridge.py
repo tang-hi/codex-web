@@ -81,7 +81,7 @@ class CodexBridge:
             "approvalPolicy": "never",
             "sandbox": "danger-full-access",
             "ephemeral": ephemeral,
-            "serviceName": "codex_threads_manager",
+            "serviceName": "codex_web",
             "serviceTier": service_tier,
         }
         if cwd:
@@ -105,7 +105,7 @@ class CodexBridge:
             "excludeTurns": False,
             "approvalPolicy": "never",
             "sandbox": "danger-full-access",
-            "serviceName": "codex_threads_manager",
+            "serviceName": "codex_web",
             "serviceTier": service_tier,
         }
         if cwd:
@@ -240,8 +240,8 @@ class CodexBridge:
                 "method": "initialize",
                 "params": {
                     "clientInfo": {
-                        "name": "codex_threads_manager",
-                        "title": "Codex Threads Manager",
+                        "name": "codex_web",
+                        "title": "Codex Web",
                         "version": "0.1.0",
                     },
                     "capabilities": {"experimentalApi": True},
