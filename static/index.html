@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex Threads Manager</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <h1>Codex Local</h1>
+        <p id="subtitle">Loading local threads...</p>
+      </div>
+      <div class="header-actions">
+        <span id="codexStatus" class="status-pill">Codex idle</span>
+      </div>
+    </header>
+
+    <nav class="tabbar" aria-label="Primary">
+      <button class="tab-button" id="threadsTabButton" type="button" data-tab="threads">Threads</button>
+      <button class="tab-button active" id="chatTabButton" type="button" data-tab="chat">Web Chat</button>
+    </nav>
+
+    <main class="layout tab-panel" id="threadsTab" hidden>
+      <section class="content">
+        <div class="view-header">
+          <h2>Threads Manager</h2>
+          <button id="rebuildButton" type="button">Rebuild Index</button>
+        </div>
+        <div class="stats" id="stats"></div>
+
+        <form class="toolbar" id="filters">
+          <label class="search-field">
+            <span>Search</span>
+            <input id="q" name="q" type="search" placeholder="title, cwd, id, branch..." autocomplete="off" />
+          </label>
+          <label>
+            <span>Status</span>
+            <select id="archived" name="archived">
+              <option value="active">Active</option>
+              <option value="archived">Archived</option>
+              <option value="all">All</option>
+            </select>
+          </label>
+          <label>
+            <span>Source</span>
+            <select id="source" name="source">
+              <option value="">All sources</option>
+            </select>
+          </label>
+          <label>
+            <span>CWD</span>
+            <select id="cwd" name="cwd">
+              <option value="">All directories</option>
+            </select>
+          </label>
+          <label>
+            <span>Sort</span>
+            <select id="sort" name="sort">
+              <option value="updatedAt">Updated</option>
+              <option value="createdAt">Created</option>
+              <option value="fileSize">File size</option>
+              <option value="cwd">CWD</option>
+              <option value="source">Source</option>
+              <option value="title">Title</option>
+            </select>
+          </label>
+        </form>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Thread</th>
+                <th>Updated</th>
+                <th>CWD</th>
+                <th>Source</th>
+                <th>Size</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="threadRows"></tbody>
+          </table>
+        </div>
+        <div class="empty" id="emptyState" hidden>No threads found.</div>
+      </section>
+
+      <aside class="details" id="details">
+        <div class="details-empty">Select a thread to inspect it.</div>
+      </aside>
+    </main>
+
+    <main class="chat-page tab-panel active" id="chatTab">
+      <section class="codex-chat" id="codexChat">
+        <div class="chat-header">
+          <div class="chat-title">
+            <h2>Remote Codex</h2>
+            <p id="chatThread">No active thread</p>
+          </div>
+          <div class="chat-actions">
+            <button id="newCodexThread" type="button">New Thread</button>
+            <div class="resume-action">
+              <button id="resumeMenuButton" type="button" aria-haspopup="dialog" aria-expanded="false">Resume</button>
+              <div id="resumePopover" class="resume-popover" hidden>
+                <input id="resumeThreadId" type="text" placeholder="Thread ID..." autocomplete="off" />
+                <button id="resumeCodexThread" type="button">Confirm</button>
+              </div>
+            </div>
+            <button id="interruptCodexTurn" type="button" disabled>Interrupt</button>
+          </div>
+        </div>
+        <div class="chat-toolbar" aria-label="Codex controls">
+          <div class="toolbar-group status-tools">
+            <strong id="chatSessionValue" class="session-pill idle">Idle</strong>
+            <em id="chatSessionMeta" class="toolbar-note">No active app-server</em>
+            <div class="inline-meter">
+              <span class="meter-fill" id="chatContextBar"></span>
+              <strong id="chatContextValue">Context waiting</strong>
+              <small id="chatContextMeta"></small>
+            </div>
+            <div class="inline-meter">
+              <span class="meter-fill" id="chatLimitBar"></span>
+              <strong id="chatLimitValue">5h waiting</strong>
+              <small id="chatLimitMeta"></small>
+            </div>
+          </div>
+          <div class="toolbar-group setting-tools">
+            <div class="choice-control cwd-control">
+              <input id="chatCwd" type="hidden" />
+              <button id="chatCwdButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
+                <strong>Working Directory: Loading...</strong>
+              </button>
+              <div id="chatCwdMenu" class="choice-menu" role="menu" hidden></div>
+            </div>
+            <input id="chatModel" type="hidden" />
+            <input id="chatEffort" type="hidden" />
+            <div class="choice-control model-control">
+              <button id="chatModelButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
+                <strong>Model: Loading...</strong>
+              </button>
+              <div id="chatModelMenu" class="choice-menu" role="menu" hidden></div>
+            </div>
+            <div class="choice-control compact">
+              <button id="chatEffortButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
+                <strong>Reasoning: Default</strong>
+              </button>
+              <div id="chatEffortMenu" class="choice-menu" role="menu" hidden></div>
+            </div>
+            <label class="fast-toggle">
+              <input id="chatFastMode" type="checkbox" />
+              <span id="chatFastLabel">Fast</span>
+            </label>
+          </div>
+        </div>
+        <div class="chat-log" id="chatLog"></div>
+        <form class="chat-composer" id="chatComposer">
+          <div class="composer-surface">
+            <textarea id="chatInput" rows="5" aria-label="Message Codex" placeholder="Message Codex"></textarea>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <script src="/vendor/markdown-it.min.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>
