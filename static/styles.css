@@ -83,6 +83,19 @@ button:disabled {
   font-weight: 650;
 }
 
+.button-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 700;
+}
+
+.button-primary:hover {
+  background: #155abf;
+  border-color: #155abf;
+  color: #fff;
+}
+
 .button-ghost {
   background: transparent;
   border-color: transparent;
@@ -1110,6 +1123,103 @@ tbody tr:last-child td {
   width: 100%;
 }
 
+.modal-backdrop {
+  align-items: center;
+  background: rgb(15 23 42 / 32%);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 18px;
+  position: fixed;
+  z-index: 80;
+}
+
+.modal-backdrop[hidden] {
+  display: none;
+}
+
+.modal-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  box-shadow: 0 24px 70px rgb(15 23 42 / 22%);
+  max-height: min(720px, calc(100vh - 36px));
+  overflow: visible;
+  width: min(620px, 100%);
+}
+
+.modal-header {
+  align-items: start;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  padding: 16px 18px 14px;
+}
+
+.modal-header h2 {
+  font-size: 18px;
+}
+
+.modal-header p {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  margin-top: 3px;
+}
+
+.modal-body {
+  padding: 16px 18px;
+}
+
+.new-thread-settings {
+  display: grid;
+  gap: 10px;
+}
+
+.modal-field {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 96px minmax(0, 1fr);
+}
+
+.modal-field > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.modal-field .choice-control,
+.modal-field .choice-button,
+.modal-field .fast-toggle {
+  width: 100%;
+}
+
+.modal-field .choice-button,
+.modal-field .fast-toggle {
+  height: 36px;
+}
+
+.modal-field .choice-menu {
+  max-height: min(360px, calc(100vh - 260px));
+  min-width: min(420px, calc(100vw - 56px));
+  z-index: 90;
+}
+
+.modal-field .choice-button strong {
+  max-width: none;
+}
+
+.modal-actions {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 8px;
+  justify-content: end;
+  padding: 12px 18px;
+}
+
 .choice-menu[hidden] {
   display: none;
 }
@@ -2084,6 +2194,22 @@ dd {
   .stats,
   .toolbar {
     grid-template-columns: 1fr;
+  }
+
+  .modal-field {
+    align-items: stretch;
+    gap: 6px;
+    grid-template-columns: 1fr;
+  }
+
+  .modal-header,
+  .modal-actions {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .modal-body {
+    padding: 14px;
   }
 
 }

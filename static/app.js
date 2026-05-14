@@ -1,9 +1,13 @@
+const THREAD_CONFIG_STORAGE_KEY = "codexThreadConfigs.v1";
+
 const state = {
   items: [],
   facets: { sources: [], cwds: [] },
   selectedId: null,
   models: [],
   modelsLoaded: false,
+  threadConfigs: loadThreadConfigs(),
+  applyingThreadConfig: false,
   codex: {
     threadId: null,
     turnId: null,
@@ -83,6 +87,22 @@ const els = {
   chatFastMode: document.getElementById("chatFastMode"),
   chatFastLabel: document.getElementById("chatFastLabel"),
   newCodexThread: document.getElementById("newCodexThread"),
+  newThreadModal: document.getElementById("newThreadModal"),
+  closeNewThreadModal: document.getElementById("closeNewThreadModal"),
+  cancelNewThread: document.getElementById("cancelNewThread"),
+  confirmNewThread: document.getElementById("confirmNewThread"),
+  newThreadSummary: document.getElementById("newThreadSummary"),
+  newThreadCwd: document.getElementById("newThreadCwd"),
+  newThreadCwdButton: document.getElementById("newThreadCwdButton"),
+  newThreadCwdMenu: document.getElementById("newThreadCwdMenu"),
+  newThreadModel: document.getElementById("newThreadModel"),
+  newThreadModelButton: document.getElementById("newThreadModelButton"),
+  newThreadModelMenu: document.getElementById("newThreadModelMenu"),
+  newThreadEffort: document.getElementById("newThreadEffort"),
+  newThreadEffortButton: document.getElementById("newThreadEffortButton"),
+  newThreadEffortMenu: document.getElementById("newThreadEffortMenu"),
+  newThreadFastMode: document.getElementById("newThreadFastMode"),
+  newThreadFastLabel: document.getElementById("newThreadFastLabel"),
   resumeCodexThread: document.getElementById("resumeCodexThread"),
   resumeMenuButton: document.getElementById("resumeMenuButton"),
   resumePopover: document.getElementById("resumePopover"),
@@ -217,6 +237,7 @@ async function loadThreads() {
   const data = await api(`/api/threads?${params()}`);
   state.items = data.items;
   state.facets = data.facets;
+  seedThreadConfigsFromItems(state.items);
   populateFacets();
   renderRows();
 }
@@ -287,6 +308,7 @@ function renderChatCwdMenu(items, selectedValue) {
       commit();
     } else if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       closeChoiceMenus();
     }
   });
@@ -381,6 +403,7 @@ async function selectThread(id) {
   renderRows();
   els.details.innerHTML = `<div class="details-empty">Loading...</div>`;
   const item = await api(`/api/threads/${encodeURIComponent(id)}`);
+  mergeThreadConfig(item.id, configFromIndexedThread(item), { overwrite: false });
   renderDetails(item);
 }
 
@@ -406,6 +429,7 @@ function renderDetails(item) {
       <div><dt>Source</dt><dd>${escapeHtml(item.source || "unknown")}</dd></div>
       <div><dt>Agent</dt><dd>${escapeHtml([item.agent_nickname, item.agent_role].filter(Boolean).join(" · "))}</dd></div>
       <div><dt>Model</dt><dd>${escapeHtml([item.model_provider, item.model].filter(Boolean).join(" · ") || "")}</dd></div>
+      <div><dt>Reasoning</dt><dd>${escapeHtml(displayReasoningEffort(item.reasoning_effort))}</dd></div>
       <div><dt>Branch</dt><dd>${escapeHtml(item.git_branch || "")}</dd></div>
       <div class="wide"><dt>CWD</dt><dd>${escapeHtml(item.cwd || "")}</dd></div>
       <div class="wide"><dt>Rollout</dt><dd>${escapeHtml(item.rollout_path || "")}</dd></div>
@@ -491,8 +515,10 @@ async function loadCodexModels() {
 
 function populateModelSelect() {
   const defaultModel = state.models.find((model) => model.isDefault) || state.models[0];
-  if (defaultModel) {
-    els.chatModel.value = defaultModel.model || defaultModel.id;
+  const activeConfig = state.codex.threadId ? state.threadConfigs[state.codex.threadId] || {} : {};
+  const preferredModel = activeConfig.model || els.chatModel.value || (defaultModel ? defaultModel.model || defaultModel.id : "");
+  if (preferredModel) {
+    els.chatModel.value = preferredModel;
   }
   renderChoiceMenu(
     els.chatModelMenu,
@@ -505,17 +531,192 @@ function populateModelSelect() {
     selectModel,
   );
   syncModelButton();
-  updateEffortOptions();
+  if (hasOwn(activeConfig, "serviceTier")) updateEffortOptions(activeConfig.effort || els.chatEffort.value || null, activeConfig.serviceTier);
+  else updateEffortOptions(activeConfig.effort || els.chatEffort.value || null);
 }
 
 function selectedModelInfo() {
-  return state.models.find((model) => (model.model || model.id) === els.chatModel.value) || null;
+  return modelInfoForValue(els.chatModel.value);
+}
+
+function modelInfoForValue(value) {
+  return state.models.find((model) => (model.model || model.id) === value) || null;
+}
+
+function loadThreadConfigs() {
+  try {
+    const raw = window.localStorage?.getItem(THREAD_CONFIG_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+
+    const configs = {};
+    for (const [threadId, value] of Object.entries(parsed)) {
+      if (!threadId || !value || typeof value !== "object" || Array.isArray(value)) continue;
+      configs[threadId] = normalizeThreadConfig(value);
+    }
+    return configs;
+  } catch {
+    return {};
+  }
+}
+
+function persistThreadConfigs() {
+  try {
+    window.localStorage?.setItem(THREAD_CONFIG_STORAGE_KEY, JSON.stringify(state.threadConfigs));
+  } catch {
+    // localStorage can be unavailable in private or restricted browser contexts.
+  }
+}
+
+function normalizeThreadConfig(value = {}) {
+  if (!value || typeof value !== "object") return {};
+  const config = {};
+  if (hasOwn(value, "cwd")) config.cwd = configValue(value.cwd);
+  if (hasOwn(value, "model")) config.model = configValue(value.model);
+  if (hasOwn(value, "effort")) config.effort = configValue(value.effort);
+  else if (hasOwn(value, "reasoningEffort")) config.effort = configValue(value.reasoningEffort);
+  else if (hasOwn(value, "reasoning_effort")) config.effort = configValue(value.reasoning_effort);
+  if (hasOwn(value, "serviceTier")) config.serviceTier = configValue(value.serviceTier);
+  else if (hasOwn(value, "service_tier")) config.serviceTier = configValue(value.service_tier);
+  if (hasOwn(value, "updatedAt")) {
+    const updatedAt = Number(value.updatedAt);
+    if (Number.isFinite(updatedAt)) config.updatedAt = updatedAt;
+  }
+  return config;
+}
+
+function configValue(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text || null;
+}
+
+function mergeThreadConfig(threadId, config, options = {}) {
+  if (!threadId) return {};
+  const incoming = normalizeThreadConfig(config);
+  const incomingKeys = ["cwd", "model", "effort", "serviceTier"].filter((key) => hasOwn(incoming, key));
+  if (!incomingKeys.length) return state.threadConfigs[threadId] || {};
+  const existing = state.threadConfigs[threadId] || {};
+  const next = { ...existing };
+  const overwrite = options.overwrite !== false;
+  let changed = !state.threadConfigs[threadId];
+
+  for (const key of incomingKeys) {
+    if (!overwrite && hasOwn(next, key) && next[key] !== null && next[key] !== "") continue;
+    if (next[key] !== incoming[key]) {
+      next[key] = incoming[key];
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    next.updatedAt = Date.now();
+    state.threadConfigs[threadId] = next;
+    if (options.persist !== false) persistThreadConfigs();
+  }
+  return state.threadConfigs[threadId] || {};
+}
+
+function configFromIndexedThread(item) {
+  const config = {};
+  if (item?.cwd) config.cwd = item.cwd;
+  if (item?.model) config.model = item.model;
+  if (item?.reasoning_effort) config.effort = item.reasoning_effort;
+  return config;
+}
+
+function configFromCodexThreadResult(result) {
+  const root = result?.threadStart || result || {};
+  const thread = root.thread || {};
+  const config = {};
+  if (hasOwn(root, "cwd")) config.cwd = root.cwd;
+  else if (hasOwn(thread, "cwd")) config.cwd = thread.cwd;
+  if (hasOwn(root, "model")) config.model = root.model;
+  else if (hasOwn(thread, "model")) config.model = thread.model;
+  if (hasOwn(root, "reasoningEffort")) config.effort = root.reasoningEffort;
+  else if (hasOwn(root, "reasoning_effort")) config.effort = root.reasoning_effort;
+  else if (hasOwn(thread, "reasoningEffort")) config.effort = thread.reasoningEffort;
+  else if (hasOwn(thread, "reasoning_effort")) config.effort = thread.reasoning_effort;
+  if (hasOwn(root, "serviceTier")) config.serviceTier = root.serviceTier;
+  else if (hasOwn(root, "service_tier")) config.serviceTier = root.service_tier;
+  return config;
+}
+
+function rememberThreadConfigFromCodexResult(threadId, result, fallback = {}) {
+  if (!threadId) return {};
+  const combined = normalizeThreadConfig(fallback);
+  const actual = configFromCodexThreadResult(result);
+  for (const key of ["cwd", "model", "effort", "serviceTier"]) {
+    if (hasOwn(actual, key)) combined[key] = actual[key];
+  }
+  return mergeThreadConfig(threadId, combined, { overwrite: true });
+}
+
+function seedThreadConfigsFromItems(items) {
+  for (const item of items || []) {
+    mergeThreadConfig(item.id, configFromIndexedThread(item), { overwrite: false, persist: false });
+  }
+  persistThreadConfigs();
+}
+
+async function ensureThreadConfig(threadId) {
+  if (!threadId) return {};
+  const indexed = state.items.find((item) => item.id === threadId);
+  if (indexed) {
+    return mergeThreadConfig(threadId, configFromIndexedThread(indexed), { overwrite: false });
+  }
+
+  try {
+    const item = await api(`/api/threads/${encodeURIComponent(threadId)}`);
+    return mergeThreadConfig(threadId, configFromIndexedThread(item), { overwrite: false });
+  } catch {
+    return state.threadConfigs[threadId] || {};
+  }
+}
+
+function optionsFromThreadConfig(config) {
+  const normalized = normalizeThreadConfig(config);
+  return {
+    cwd: normalized.cwd || "",
+    model: normalized.model || null,
+    effort: normalized.effort || null,
+    serviceTier: hasOwn(normalized, "serviceTier") ? normalized.serviceTier : null,
+  };
+}
+
+function hasThreadConfigValues(config) {
+  return ["cwd", "model", "effort", "serviceTier"].some((key) => hasOwn(config, key));
+}
+
+function saveActiveThreadConfig() {
+  if (state.applyingThreadConfig || !state.codex.threadId) return;
+  mergeThreadConfig(state.codex.threadId, chatOptions(), { overwrite: true });
+}
+
+function applyThreadConfigToControls(config = {}) {
+  const normalized = normalizeThreadConfig(config);
+  state.applyingThreadConfig = true;
+  try {
+    if (hasOwn(normalized, "cwd")) els.chatCwd.value = normalized.cwd || "";
+    if (hasOwn(normalized, "model")) els.chatModel.value = normalized.model || "";
+    syncCwdButton();
+    syncModelButton();
+    updateEffortOptions(
+      hasOwn(normalized, "effort") ? normalized.effort : null,
+      hasOwn(normalized, "serviceTier") ? normalized.serviceTier : null,
+    );
+  } finally {
+    state.applyingThreadConfig = false;
+  }
+  renderChatStatus();
 }
 
 function selectCwd(value) {
   els.chatCwd.value = value || "";
   closeChoiceMenus();
   syncCwdButton();
+  saveActiveThreadConfig();
 }
 
 function syncCwdButton() {
@@ -529,7 +730,7 @@ function syncCwdButton() {
   renderActivitySidebar();
 }
 
-function updateEffortOptions() {
+function updateEffortOptions(preferredEffort = els.chatEffort.value, preferredServiceTier) {
   const model = selectedModelInfo();
   const efforts = model ? model.supportedReasoningEfforts || [] : [];
   const items = [];
@@ -545,12 +746,15 @@ function updateEffortOptions() {
         description: effort.description || "",
       });
     }
-    els.chatEffort.value = model.defaultReasoningEffort || efforts[0].reasoningEffort;
+    const preferred = preferredEffort || "";
+    const hasPreferred = efforts.some((effort) => effort.reasoningEffort === preferred);
+    els.chatEffort.value = hasPreferred ? preferred : model.defaultReasoningEffort || efforts[0].reasoningEffort;
   }
 
   renderChoiceMenu(els.chatEffortMenu, items, els.chatEffort.value, selectEffort);
   syncEffortButton();
-  updateFastModeControl();
+  if (arguments.length >= 2) updateFastModeControl(preferredServiceTier);
+  else updateFastModeControl();
 }
 
 function selectModel(value) {
@@ -558,17 +762,19 @@ function selectModel(value) {
   closeChoiceMenus();
   syncModelButton();
   updateEffortOptions();
+  saveActiveThreadConfig();
 }
 
 function selectEffort(value) {
   els.chatEffort.value = value || "";
   closeChoiceMenus();
   syncEffortButton();
+  saveActiveThreadConfig();
 }
 
 function syncModelButton() {
   const model = selectedModelInfo();
-  const label = model ? model.displayName || model.model || model.id : "Model";
+  const label = model ? model.displayName || model.model || model.id : els.chatModel.value || "Model";
   els.chatModelButton.querySelector("strong").textContent = label;
   els.chatModelButton.title = model?.description || label;
   markChoiceMenuSelection(els.chatModelMenu, els.chatModel.value);
@@ -622,6 +828,9 @@ function closeChoiceMenus() {
     [els.chatCwdButton, els.chatCwdMenu],
     [els.chatModelButton, els.chatModelMenu],
     [els.chatEffortButton, els.chatEffortMenu],
+    [els.newThreadCwdButton, els.newThreadCwdMenu],
+    [els.newThreadModelButton, els.newThreadModelMenu],
+    [els.newThreadEffortButton, els.newThreadEffortMenu],
   ]) {
     if (!button || !menu) continue;
     menu.hidden = true;
@@ -643,10 +852,18 @@ function closeResumePopover() {
   els.resumeMenuButton.setAttribute("aria-expanded", "false");
 }
 
-function updateFastModeControl() {
+function updateFastModeControl(preferredServiceTier) {
   const tier = selectedFastTier();
+  const hasPreferred = arguments.length > 0;
   els.chatFastMode.disabled = !tier;
-  els.chatFastMode.checked = Boolean(tier);
+  if (!tier) {
+    els.chatFastMode.checked = false;
+  } else if (hasPreferred) {
+    els.chatFastMode.checked = Boolean(preferredServiceTier && tier.id === preferredServiceTier);
+  } else if (els.chatFastMode.dataset.initialized !== "true") {
+    els.chatFastMode.checked = true;
+  }
+  els.chatFastMode.dataset.initialized = "true";
   els.chatFastLabel.title = tier ? tier.description || tier.name || tier.id || "Fast" : "";
   syncFastModeLabel();
   updateChatEmptyState();
@@ -661,12 +878,7 @@ function syncFastModeLabel() {
 }
 
 function selectedFastTier() {
-  const model = selectedModelInfo();
-  if (!model) return null;
-  const serviceTiers = model.serviceTiers || [];
-  if (serviceTiers.length > 0) return serviceTiers[0];
-  const legacyTier = (model.additionalSpeedTiers || [])[0];
-  return legacyTier ? { id: legacyTier, name: "Fast", description: legacyTier } : null;
+  return selectedFastTierForModel(els.chatModel.value);
 }
 
 function displayReasoningEffort(value) {
@@ -681,8 +893,12 @@ function displayReasoningEffort(value) {
 }
 
 function selectedModelLabel() {
-  const model = selectedModelInfo();
-  return model ? model.displayName || model.model || model.id : els.chatModel.value || "Loading...";
+  return modelLabelForValue(els.chatModel.value) || "Loading...";
+}
+
+function modelLabelForValue(value) {
+  const model = modelInfoForValue(value);
+  return model ? model.displayName || model.model || model.id : value || "";
 }
 
 function chatOptions() {
@@ -693,6 +909,258 @@ function chatOptions() {
     effort: els.chatEffort.value || null,
     serviceTier: els.chatFastMode.checked && tier ? tier.id : null,
   };
+}
+
+function newThreadOptions() {
+  const tier = selectedNewThreadFastTier();
+  return {
+    cwd: els.newThreadCwd.value.trim(),
+    model: els.newThreadModel.value || null,
+    effort: els.newThreadEffort.value || null,
+    serviceTier: els.newThreadFastMode.checked && tier ? tier.id : null,
+  };
+}
+
+async function openNewThreadModal() {
+  await loadCodexModels();
+  closeChoiceMenus();
+  const activeConfig = state.codex.threadId ? state.threadConfigs[state.codex.threadId] || {} : {};
+  const base = hasThreadConfigValues(activeConfig) ? optionsFromThreadConfig(activeConfig) : chatOptions();
+  setNewThreadDraft(base);
+  els.newThreadModal.hidden = false;
+  els.confirmNewThread.disabled = false;
+  els.confirmNewThread.textContent = "Create Thread";
+  setTimeout(() => els.newThreadCwdButton.focus(), 0);
+}
+
+function closeNewThreadModal() {
+  closeChoiceMenus();
+  els.newThreadModal.hidden = true;
+  els.newCodexThread.focus();
+}
+
+function setNewThreadDraft(config = {}) {
+  const normalized = normalizeThreadConfig(config);
+  const defaultModel = state.models.find((model) => model.isDefault) || state.models[0];
+  els.newThreadCwd.value = hasOwn(normalized, "cwd") ? normalized.cwd || "" : els.chatCwd.value.trim();
+  els.newThreadModel.value = normalized.model || (defaultModel ? defaultModel.model || defaultModel.id : "") || "";
+  renderNewThreadCwdMenu();
+  renderNewThreadModelMenu();
+  if (hasOwn(normalized, "serviceTier")) updateNewThreadEffortOptions(normalized.effort || null, normalized.serviceTier);
+  else updateNewThreadEffortOptions(normalized.effort || null);
+  syncNewThreadSummary();
+}
+
+function renderNewThreadCwdMenu() {
+  const menu = els.newThreadCwdMenu;
+  const selectedValue = els.newThreadCwd.value;
+  const items = state.facets.cwds
+    .filter((item) => item.value && item.value !== "(no cwd)")
+    .map((item) => ({
+      value: item.value,
+      label: shortPath(item.value),
+      description: `${item.count} threads`,
+    }));
+
+  menu.innerHTML = "";
+  const customRow = document.createElement("div");
+  customRow.className = "choice-menu-custom";
+  customRow.innerHTML = `
+    <input type="text" class="custom-cwd-input" placeholder="Type a working directory..." spellcheck="false" autocomplete="off" />
+    <button type="button" class="custom-cwd-use">Use</button>
+  `;
+  const input = customRow.querySelector("input");
+  const useButton = customRow.querySelector("button");
+  input.value = selectedValue || "";
+  const commit = () => {
+    const value = input.value.trim();
+    if (!value) return;
+    selectNewThreadCwd(value);
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeChoiceMenus();
+    }
+  });
+  useButton.addEventListener("click", commit);
+  menu.appendChild(customRow);
+
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "choice-menu-empty";
+    empty.textContent = "No indexed directories yet. Type a path above.";
+    menu.appendChild(empty);
+    syncNewThreadCwdButton();
+    return;
+  }
+
+  for (const item of items) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "choice-menu-item";
+    button.dataset.value = item.value || "";
+    button.setAttribute("role", "menuitemradio");
+    button.innerHTML = `
+      <strong>${escapeHtml(item.label)}</strong>
+      ${item.description ? `<span>${escapeHtml(item.description)}</span>` : ""}
+    `;
+    button.addEventListener("click", () => selectNewThreadCwd(item.value));
+    menu.appendChild(button);
+  }
+  markChoiceMenuSelection(menu, selectedValue);
+  syncNewThreadCwdButton();
+}
+
+function renderNewThreadModelMenu() {
+  renderChoiceMenu(
+    els.newThreadModelMenu,
+    state.models.map((model) => ({
+      value: model.model || model.id,
+      label: model.displayName || model.model || model.id,
+      description: model.description || "",
+    })),
+    els.newThreadModel.value,
+    selectNewThreadModel,
+  );
+  syncNewThreadModelButton();
+}
+
+function updateNewThreadEffortOptions(preferredEffort = els.newThreadEffort.value, preferredServiceTier) {
+  const model = modelInfoForValue(els.newThreadModel.value);
+  const efforts = model ? model.supportedReasoningEfforts || [] : [];
+  const items = [];
+
+  if (!efforts.length) {
+    els.newThreadEffort.value = "";
+    items.push({ value: "", label: "Default", description: "" });
+  } else {
+    for (const effort of efforts) {
+      items.push({
+        value: effort.reasoningEffort,
+        label: effort.reasoningEffort,
+        description: effort.description || "",
+      });
+    }
+    const preferred = preferredEffort || "";
+    const hasPreferred = efforts.some((effort) => effort.reasoningEffort === preferred);
+    els.newThreadEffort.value = hasPreferred ? preferred : model.defaultReasoningEffort || efforts[0].reasoningEffort;
+  }
+
+  renderChoiceMenu(els.newThreadEffortMenu, items, els.newThreadEffort.value, selectNewThreadEffort);
+  syncNewThreadEffortButton();
+  if (arguments.length >= 2) updateNewThreadFastModeControl(preferredServiceTier);
+  else updateNewThreadFastModeControl();
+}
+
+function selectNewThreadCwd(value) {
+  els.newThreadCwd.value = value || "";
+  closeChoiceMenus();
+  syncNewThreadCwdButton();
+}
+
+function selectNewThreadModel(value) {
+  els.newThreadModel.value = value || "";
+  closeChoiceMenus();
+  syncNewThreadModelButton();
+  updateNewThreadEffortOptions();
+}
+
+function selectNewThreadEffort(value) {
+  els.newThreadEffort.value = value || "";
+  closeChoiceMenus();
+  syncNewThreadEffortButton();
+}
+
+function syncNewThreadCwdButton() {
+  const value = els.newThreadCwd.value;
+  const label = value ? shortPath(value) : "No directory";
+  els.newThreadCwdButton.querySelector("strong").textContent = label;
+  els.newThreadCwdButton.title = value || label;
+  const input = els.newThreadCwdMenu.querySelector(".custom-cwd-input");
+  if (input) input.value = value || "";
+  markChoiceMenuSelection(els.newThreadCwdMenu, value);
+  syncNewThreadSummary();
+}
+
+function syncNewThreadModelButton() {
+  const label = modelLabelForValue(els.newThreadModel.value) || "Model";
+  els.newThreadModelButton.querySelector("strong").textContent = label;
+  els.newThreadModelButton.title = modelInfoForValue(els.newThreadModel.value)?.description || label;
+  markChoiceMenuSelection(els.newThreadModelMenu, els.newThreadModel.value);
+  syncNewThreadSummary();
+}
+
+function syncNewThreadEffortButton() {
+  const label = displayReasoningEffort(els.newThreadEffort.value);
+  els.newThreadEffortButton.querySelector("strong").textContent = `Reasoning: ${label}`;
+  markChoiceMenuSelection(els.newThreadEffortMenu, els.newThreadEffort.value);
+  syncNewThreadSummary();
+}
+
+function selectedFastTierForModel(modelValue) {
+  const model = modelInfoForValue(modelValue);
+  if (!model) return null;
+  const serviceTiers = model.serviceTiers || [];
+  if (serviceTiers.length > 0) return serviceTiers[0];
+  const legacyTier = (model.additionalSpeedTiers || [])[0];
+  return legacyTier ? { id: legacyTier, name: "Fast", description: legacyTier } : null;
+}
+
+function selectedNewThreadFastTier() {
+  return selectedFastTierForModel(els.newThreadModel.value);
+}
+
+function updateNewThreadFastModeControl(preferredServiceTier) {
+  const tier = selectedNewThreadFastTier();
+  const wasDisabled = els.newThreadFastMode.disabled;
+  const hasPreferred = arguments.length > 0;
+  els.newThreadFastMode.disabled = !tier;
+  if (!tier) {
+    els.newThreadFastMode.checked = false;
+  } else if (hasPreferred) {
+    els.newThreadFastMode.checked = Boolean(preferredServiceTier && tier.id === preferredServiceTier);
+  } else if (els.newThreadFastMode.dataset.initialized !== "true" || wasDisabled) {
+    els.newThreadFastMode.checked = true;
+  }
+  els.newThreadFastMode.dataset.initialized = "true";
+  els.newThreadFastLabel.title = tier ? tier.description || tier.name || tier.id || "Fast" : "";
+  syncNewThreadFastModeLabel();
+}
+
+function syncNewThreadFastModeLabel() {
+  const tier = selectedNewThreadFastTier();
+  const available = Boolean(tier) && !els.newThreadFastMode.disabled;
+  els.newThreadFastLabel.textContent = available ? `Fast mode: ${els.newThreadFastMode.checked ? "On" : "Off"}` : "Fast mode unavailable";
+  els.newThreadFastMode.closest(".fast-toggle").classList.toggle("on", els.newThreadFastMode.checked && available);
+  els.newThreadFastMode.closest(".fast-toggle").classList.toggle("disabled", !available);
+  syncNewThreadSummary();
+}
+
+function syncNewThreadSummary() {
+  const cwd = shortPath(els.newThreadCwd.value) || "No directory";
+  const model = modelLabelForValue(els.newThreadModel.value) || "Model";
+  const effort = displayReasoningEffort(els.newThreadEffort.value);
+  const fast = els.newThreadFastMode.checked && selectedNewThreadFastTier() ? "Fast" : "Standard";
+  els.newThreadSummary.textContent = [cwd, model, effort, fast].filter(Boolean).join(" · ");
+}
+
+async function confirmNewThread() {
+  const options = newThreadOptions();
+  els.confirmNewThread.disabled = true;
+  els.confirmNewThread.textContent = "Creating...";
+  try {
+    await startNewCodexThread(true, options);
+    closeNewThreadModal();
+  } catch (error) {
+    els.confirmNewThread.disabled = false;
+    els.confirmNewThread.textContent = "Create Thread";
+    appendChatLine("error", error.message);
+  }
 }
 
 function handleCodexEvent(event) {
@@ -738,7 +1206,10 @@ function handleCodexEvent(event) {
   }
   if (method === "thread/started") {
     const id = params.thread && params.thread.id;
-    if (id) setActiveThread(id);
+    if (id) {
+      mergeThreadConfig(id, configFromCodexThreadResult(params), { overwrite: false });
+      setActiveThread(id, { applyConfig: false });
+    }
     setChatActivity("");
     return;
   }
@@ -825,10 +1296,12 @@ function handleCodexEvent(event) {
   }
 }
 
-async function startNewCodexThread(clearTranscript = true) {
+async function startNewCodexThread(clearTranscript = true, overrideOptions = null) {
   await loadCodexModels();
-  const result = await postJson("/api/codex/start", chatOptions());
+  const options = overrideOptions ? optionsFromThreadConfig(overrideOptions) : chatOptions();
+  const result = await postJson("/api/codex/start", options);
   const id = result.threadStart && result.threadStart.thread && result.threadStart.thread.id;
+  if (id) rememberThreadConfigFromCodexResult(id, result.threadStart || result, options);
   if (clearTranscript) resetChatTranscript();
   if (id) setActiveThread(id);
   setChatActivity("Ready");
@@ -854,8 +1327,12 @@ async function resumeCodexThreadById() {
     appendChatLine("warning", "Enter a thread id first.");
     return;
   }
-  const result = await postJson("/api/codex/resume", { threadId, ...chatOptions() });
+  const config = await ensureThreadConfig(threadId);
+  const options = optionsFromThreadConfig(config);
+  if (hasThreadConfigValues(config)) applyThreadConfigToControls(config);
+  const result = await postJson("/api/codex/resume", { threadId, ...options });
   const id = result.thread && result.thread.id;
+  if (id) rememberThreadConfigFromCodexResult(id, result, options);
   resetChatTranscript();
   if (id) setActiveThread(id);
   renderResumedThread(result);
@@ -877,7 +1354,10 @@ async function sendCodexMessage(event) {
     if (!state.codex.threadId) {
       await startNewCodexThread(false);
     }
-    const body = { threadId: state.codex.threadId, text, ...chatOptions() };
+    saveActiveThreadConfig();
+    const activeConfig = state.threadConfigs[state.codex.threadId];
+    const options = activeConfig ? optionsFromThreadConfig(activeConfig) : chatOptions();
+    const body = { threadId: state.codex.threadId, text, ...options };
     if (state.codex.turnId) {
       await postJson("/api/codex/steer", { ...body, turnId: state.codex.turnId });
     } else {
@@ -1998,7 +2478,7 @@ function itemText(item) {
   return (
     optionalText(item.text) ||
     optionalText(item.message) ||
-    (typeof item.content === "string" ? item.content : "") ||
+    textFromContent(item.content) ||
     textFromContent(item.fragments) ||
     textFromContent(item.textElements) ||
     textFromContent(item.text_elements) ||
@@ -2026,8 +2506,12 @@ function textFromContent(value) {
   return "";
 }
 
-function setActiveThread(id) {
+function setActiveThread(id, options = {}) {
   state.codex.threadId = id;
+  const config = state.threadConfigs[id];
+  if (options.applyConfig !== false && config && hasThreadConfigValues(config)) {
+    applyThreadConfigToControls(config);
+  }
   renderChatThreadLine();
   renderSidebarThreads();
   renderActivitySidebar();
@@ -2525,6 +3009,10 @@ function optionalText(value) {
   return String(value).trim();
 }
 
+function hasOwn(value, key) {
+  return Boolean(value) && Object.prototype.hasOwnProperty.call(value, key);
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -2579,11 +3067,31 @@ els.chatCwdButton.addEventListener("click", () => {
 });
 els.chatModelButton.addEventListener("click", () => toggleChoiceMenu(els.chatModelMenu, els.chatModelButton));
 els.chatEffortButton.addEventListener("click", () => toggleChoiceMenu(els.chatEffortMenu, els.chatEffortButton));
+els.newThreadCwdButton.addEventListener("click", () => {
+  toggleChoiceMenu(els.newThreadCwdMenu, els.newThreadCwdButton);
+  if (!els.newThreadCwdMenu.hidden) {
+    const input = els.newThreadCwdMenu.querySelector(".custom-cwd-input");
+    if (input) {
+      input.focus();
+      input.select();
+    }
+  }
+});
+els.newThreadModelButton.addEventListener("click", () => toggleChoiceMenu(els.newThreadModelMenu, els.newThreadModelButton));
+els.newThreadEffortButton.addEventListener("click", () => toggleChoiceMenu(els.newThreadEffortMenu, els.newThreadEffortButton));
+els.newThreadFastMode.addEventListener("change", syncNewThreadFastModeLabel);
+els.closeNewThreadModal.addEventListener("click", closeNewThreadModal);
+els.cancelNewThread.addEventListener("click", closeNewThreadModal);
+els.confirmNewThread.addEventListener("click", () => confirmNewThread());
+els.newThreadModal.addEventListener("click", (event) => {
+  if (event.target === els.newThreadModal) closeNewThreadModal();
+});
 els.resumeMenuButton.addEventListener("click", toggleResumePopover);
 els.detailsToggle.addEventListener("click", toggleDetailsPanel);
 els.chatFastMode.addEventListener("change", () => {
   syncFastModeLabel();
   updateChatEmptyState();
+  saveActiveThreadConfig();
 });
 els.copyThreadId.addEventListener("click", () => {
   if (state.codex.threadId) copyText(state.codex.threadId);
@@ -2638,9 +3146,11 @@ document.addEventListener("click", (event) => {
   closeChoiceMenus();
 });
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeChoiceMenus();
+  if (event.key !== "Escape") return;
+  closeChoiceMenus();
+  if (!els.newThreadModal.hidden) closeNewThreadModal();
 });
-els.newCodexThread.addEventListener("click", () => startNewCodexThread().catch((error) => appendChatLine("error", error.message)));
+els.newCodexThread.addEventListener("click", () => openNewThreadModal().catch((error) => appendChatLine("error", error.message)));
 els.resumeCodexThread.addEventListener("click", () =>
   resumeCodexThreadById().catch((error) => appendChatLine("error", error.message)),
 );

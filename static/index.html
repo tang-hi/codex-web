@@ -243,6 +243,61 @@
           </aside>
         </div>
       </main>
+
+      <div class="modal-backdrop" id="newThreadModal" hidden>
+        <section class="modal-panel new-thread-panel" role="dialog" aria-modal="true" aria-labelledby="newThreadTitle">
+          <div class="modal-header">
+            <div>
+              <h2 id="newThreadTitle">New Thread</h2>
+              <p id="newThreadSummary">Configuration</p>
+            </div>
+            <button id="closeNewThreadModal" class="icon-button" type="button" aria-label="Close">Close</button>
+          </div>
+          <div class="modal-body new-thread-settings">
+            <div class="modal-field">
+              <span>CWD</span>
+              <div class="choice-control cwd-control">
+                <input id="newThreadCwd" type="hidden" />
+                <button id="newThreadCwdButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
+                  <strong>Loading...</strong>
+                </button>
+                <div id="newThreadCwdMenu" class="choice-menu" role="menu" hidden></div>
+              </div>
+            </div>
+            <div class="modal-field">
+              <span>Model</span>
+              <input id="newThreadModel" type="hidden" />
+              <div class="choice-control model-control">
+                <button id="newThreadModelButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
+                  <strong>Loading...</strong>
+                </button>
+                <div id="newThreadModelMenu" class="choice-menu" role="menu" hidden></div>
+              </div>
+            </div>
+            <div class="modal-field">
+              <span>Reasoning</span>
+              <input id="newThreadEffort" type="hidden" />
+              <div class="choice-control compact">
+                <button id="newThreadEffortButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
+                  <strong>Default</strong>
+                </button>
+                <div id="newThreadEffortMenu" class="choice-menu" role="menu" hidden></div>
+              </div>
+            </div>
+            <div class="modal-field">
+              <span>Speed</span>
+              <label class="fast-toggle">
+                <input id="newThreadFastMode" type="checkbox" />
+                <span id="newThreadFastLabel">Fast mode: Off</span>
+              </label>
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button id="cancelNewThread" class="button-ghost" type="button">Cancel</button>
+            <button id="confirmNewThread" class="button-primary" type="button">Create Thread</button>
+          </div>
+        </section>
+      </div>
     </div>
 
     <script src="/vendor/markdown-it.min.js"></script>
