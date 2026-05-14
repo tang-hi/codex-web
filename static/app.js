@@ -156,15 +156,50 @@ function createMarkdownRenderer() {
 function codeBlockHtml(content, lang = "") {
   const language = String(lang || "").trim();
   const label = language || "code";
+  const highlighted = highlightCode(content, language);
   return `
     <div class="code-block">
       <div class="code-block-header">
         <span>${escapeHtml(label)}</span>
         <button type="button" class="copy-code-button" data-copy-code="${escapeAttr(encodeURIComponent(content))}">Copy</button>
       </div>
-      <pre><code class="${language ? `language-${escapeAttr(language)}` : ""}">${escapeHtml(content)}</code></pre>
+      <pre><code class="${codeClassName(language, highlighted.highlighted)}">${highlighted.html}</code></pre>
     </div>
   `;
+}
+
+function highlightCode(content, language) {
+  const source = String(content || "");
+  const hljs = window.hljs;
+  if (!hljs) return { html: escapeHtml(source), highlighted: false };
+
+  try {
+    if (language && hljs.getLanguage(language)) {
+      return {
+        html: hljs.highlight(source, { language, ignoreIllegals: true }).value,
+        highlighted: true,
+      };
+    }
+    if (!language && source.length <= 20000) {
+      return {
+        html: hljs.highlightAuto(source).value,
+        highlighted: true,
+      };
+    }
+  } catch {
+    // Fall back to escaped plain text if a language grammar rejects the input.
+  }
+
+  return { html: escapeHtml(source), highlighted: false };
+}
+
+function codeClassName(language, highlighted) {
+  return [
+    highlighted ? "hljs" : "",
+    language ? `language-${escapeAttr(language)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function setTokenAttr(token, name, value) {
