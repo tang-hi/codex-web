@@ -1301,6 +1301,14 @@ tbody tr:last-child td {
   padding: 8px 9px;
 }
 
+.chat-log-shell {
+  background: var(--bg-app);
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
 .chat-log {
   background: var(--bg-app);
   flex: 1;
@@ -1308,6 +1316,96 @@ tbody tr:last-child td {
   min-height: 0;
   overflow: auto;
   padding: 24px;
+}
+
+.message-jump-nav {
+  align-items: center;
+  background: rgb(255 255 255 / 90%);
+  border: 1px solid #cfd8e3;
+  border-radius: 999px;
+  bottom: 14px;
+  box-shadow: 0 8px 20px rgb(15 23 42 / 11%);
+  display: inline-flex;
+  gap: 1px;
+  padding: 2px;
+  position: absolute;
+  right: 16px;
+  z-index: 5;
+}
+
+.message-jump-nav[hidden] {
+  display: none;
+}
+
+.message-jump-nav button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: #526579;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 750;
+  height: 24px;
+  justify-content: center;
+  line-height: 1;
+  min-height: 0;
+  padding: 0;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
+  width: 24px;
+}
+
+.message-jump-nav button[hidden] {
+  display: none;
+}
+
+.message-jump-nav.anchor-prev #jumpLatest {
+  order: 1;
+}
+
+.message-jump-nav.anchor-prev #jumpNextSpeech {
+  order: 2;
+}
+
+.message-jump-nav.anchor-prev #jumpPrevSpeech {
+  order: 3;
+}
+
+.message-jump-nav.anchor-next #jumpLatest {
+  order: 1;
+}
+
+.message-jump-nav.anchor-next #jumpPrevSpeech {
+  order: 2;
+}
+
+.message-jump-nav.anchor-next #jumpNextSpeech {
+  order: 3;
+}
+
+.message-jump-nav.anchor-latest #jumpPrevSpeech {
+  order: 1;
+}
+
+.message-jump-nav.anchor-latest #jumpNextSpeech {
+  order: 2;
+}
+
+.message-jump-nav.anchor-latest #jumpLatest {
+  order: 3;
+}
+
+.message-jump-nav button:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.message-jump-nav button:disabled {
+  background: transparent;
+  color: #9aa6b2;
+  opacity: 0.46;
 }
 
 .chat-log > * {
@@ -2290,6 +2388,11 @@ dd {
   .chat-log {
     min-height: 320px;
     padding: 22px 12px;
+  }
+
+  .message-jump-nav {
+    bottom: 10px;
+    right: 10px;
   }
 
   .chat-composer {

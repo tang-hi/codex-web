@@ -133,7 +133,14 @@
               <button id="interruptCodexTurn" class="button-danger" type="button" disabled hidden>Interrupt</button>
             </div>
           </div>
-          <div class="chat-log" id="chatLog"></div>
+          <div class="chat-log-shell">
+            <div class="chat-log" id="chatLog"></div>
+            <div id="messageJumpNav" class="message-jump-nav" aria-label="Message navigation" hidden>
+              <button id="jumpPrevSpeech" type="button" title="Previous user or Codex message" aria-label="Previous user or Codex message">↑</button>
+              <button id="jumpNextSpeech" type="button" title="Next user or Codex message" aria-label="Next user or Codex message">↓</button>
+              <button id="jumpLatest" type="button" title="Back to latest" aria-label="Back to latest">↧</button>
+            </div>
+          </div>
           <form class="chat-composer" id="chatComposer">
             <div class="composer-content">
               <div class="composer-surface">

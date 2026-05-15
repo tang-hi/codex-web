@@ -20,6 +20,7 @@ const state = {
       label: "Codex idle",
       lastError: "",
     },
+    jumpNavAnchor: "prev",
     threadStatus: "",
     threadStatusMessage: "",
     actionInFlight: "",
@@ -81,6 +82,10 @@ const els = {
   chatLimitValue: document.getElementById("chatLimitValue"),
   chatLimitMeta: document.getElementById("chatLimitMeta"),
   chatLimitBar: document.getElementById("chatLimitBar"),
+  messageJumpNav: document.getElementById("messageJumpNav"),
+  jumpPrevSpeech: document.getElementById("jumpPrevSpeech"),
+  jumpNextSpeech: document.getElementById("jumpNextSpeech"),
+  jumpLatest: document.getElementById("jumpLatest"),
   chatCwd: document.getElementById("chatCwd"),
   chatLog: document.getElementById("chatLog"),
   chatComposer: document.getElementById("chatComposer"),
@@ -2864,6 +2869,7 @@ function renderThreadHistoryTurns(turns, placement, options = {}) {
     const before = firstTranscriptContentNode();
     els.chatLog.insertBefore(fragment, before);
     updateChatEmptyState();
+    updateMessageJumpNav();
     return;
   }
 
@@ -3023,6 +3029,7 @@ function resetChatTranscript() {
   renderChatThreadLine();
   renderChatEmptyState();
   renderChatStatus();
+  updateMessageJumpNav();
 }
 
 function chatHasMessages() {
@@ -3285,9 +3292,127 @@ function setMeter(node, percent, mode = "used") {
   node.classList.toggle("empty", mode === "empty");
 }
 
-function scrollChatToBottom() {
+function speechMessageNodes() {
+  return Array.from(els.chatLog.querySelectorAll(".transcript-message.user, .transcript-message.assistant"));
+}
+
+function speechNodeTargetScroll(node) {
+  const containerRect = els.chatLog.getBoundingClientRect();
+  const nodeRect = node.getBoundingClientRect();
+  return els.chatLog.scrollTop + nodeRect.top - containerRect.top - 16;
+}
+
+function previousSpeechNode() {
+  const current = els.chatLog.scrollTop;
+  const messages = speechMessageNodes();
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const node = messages[index];
+    if (speechNodeTargetScroll(node) < current - 8) return node;
+  }
+  return null;
+}
+
+function nextSpeechNode() {
+  const current = els.chatLog.scrollTop;
+  for (const node of speechMessageNodes()) {
+    if (speechNodeTargetScroll(node) > current + 8) return node;
+  }
+  return null;
+}
+
+function chatAtBottom() {
+  return els.chatLog.scrollHeight - els.chatLog.scrollTop - els.chatLog.clientHeight <= 36;
+}
+
+function chatAtTop() {
+  return els.chatLog.scrollTop <= 18;
+}
+
+function scrollToSpeechNode(target) {
+  if (!target) return;
+  els.chatLog.scrollTo({
+    top: Math.max(0, speechNodeTargetScroll(target)),
+    behavior: "smooth",
+  });
+}
+
+function setJumpNavAnchorFromCompact(anchor) {
+  if (!els.messageJumpNav || !els.messageJumpNav.classList.contains("expanded")) {
+    state.codex.jumpNavAnchor = anchor;
+  }
+}
+
+async function jumpToPreviousSpeech() {
+  setJumpNavAnchorFromCompact("prev");
+  let target = previousSpeechNode();
+  if (!target && state.codex.history.hasMore && !state.codex.history.loading) {
+    await loadOlderThreadHistory();
+    target = previousSpeechNode();
+  }
+  if (!target) return;
+  scrollToSpeechNode(target);
+  updateMessageJumpNav();
+}
+
+function jumpToNextSpeech() {
+  setJumpNavAnchorFromCompact("next");
+  const target = nextSpeechNode();
+  if (!target) return;
+  scrollToSpeechNode(target);
+  updateMessageJumpNav();
+}
+
+function jumpToLatestMessage() {
+  setJumpNavAnchorFromCompact("latest");
+  scrollChatToBottom({ smooth: true });
+}
+
+function updateMessageJumpNav() {
+  if (!els.messageJumpNav) return;
+  const canJumpPrev = Boolean(previousSpeechNode());
+  const canJumpNext = Boolean(nextSpeechNode());
+  const canJumpLatest = !chatAtBottom();
+  const canLoadOlder = Boolean(state.codex.history.threadId && state.codex.history.initialized && state.codex.history.hasMore);
+  const canMovePrev = canJumpPrev || canLoadOlder;
+  const canShowAny = canMovePrev || canJumpNext || canJumpLatest;
+  els.messageJumpNav.hidden = !canShowAny;
+  if (!canShowAny) return;
+
+  let mode = "expanded";
+  if (chatAtBottom()) mode = "bottom";
+  else if (chatAtTop() && !canMovePrev && canJumpNext) mode = "top";
+  else if (!canMovePrev && !canJumpNext && canJumpLatest) mode = "latest";
+  const anchor =
+    mode === "bottom" ? "prev" : mode === "top" ? "next" : mode === "latest" ? "latest" : state.codex.jumpNavAnchor || "prev";
+
+  const showPrev = mode === "bottom" ? canMovePrev : mode === "expanded" && canMovePrev;
+  const showNext = mode === "top" ? canJumpNext : mode === "expanded" && canJumpNext;
+  const showLatest = mode === "latest" ? canJumpLatest : mode === "expanded" && canJumpLatest;
+
+  els.messageJumpNav.classList.toggle("compact", mode !== "expanded");
+  els.messageJumpNav.classList.toggle("expanded", mode === "expanded");
+  els.messageJumpNav.classList.toggle("anchor-prev", anchor === "prev");
+  els.messageJumpNav.classList.toggle("anchor-next", anchor === "next");
+  els.messageJumpNav.classList.toggle("anchor-latest", anchor === "latest");
+  els.messageJumpNav.hidden = !(showPrev || showNext || showLatest);
+
+  els.jumpPrevSpeech.hidden = !showPrev;
+  els.jumpNextSpeech.hidden = !showNext;
+  els.jumpLatest.hidden = !showLatest;
+
+  els.jumpPrevSpeech.disabled = state.codex.history.loading || !canMovePrev;
+  els.jumpNextSpeech.disabled = !canJumpNext;
+  els.jumpLatest.disabled = !canJumpLatest;
+}
+
+function scrollChatToBottom(options = {}) {
   updateChatEmptyState();
-  els.chatLog.scrollTop = els.chatLog.scrollHeight;
+  if (options.smooth) {
+    els.chatLog.scrollTo({ top: els.chatLog.scrollHeight, behavior: "smooth" });
+  } else {
+    els.chatLog.scrollTop = els.chatLog.scrollHeight;
+  }
+  updateMessageJumpNav();
 }
 
 function safeId(value) {
@@ -3603,6 +3728,11 @@ els.chatFastMode.addEventListener("change", () => {
 els.copyThreadId.addEventListener("click", () => {
   if (state.codex.threadId) copyText(state.codex.threadId);
 });
+els.jumpPrevSpeech.addEventListener("click", () => {
+  jumpToPreviousSpeech().catch((error) => appendChatLine("error", error.message));
+});
+els.jumpNextSpeech.addEventListener("click", jumpToNextSpeech);
+els.jumpLatest.addEventListener("click", jumpToLatestMessage);
 els.chatLog.addEventListener("click", (event) => {
   const target = event.target instanceof Element ? event.target : null;
   const promptButton = target?.closest("[data-prompt]");
@@ -3641,7 +3771,14 @@ els.chatLog.addEventListener("click", (event) => {
     collapseButton.textContent = anyOpen ? "Show details" : "Collapse";
   }
 });
-els.chatLog.addEventListener("scroll", maybeLoadOlderHistory, { passive: true });
+els.chatLog.addEventListener(
+  "scroll",
+  () => {
+    maybeLoadOlderHistory();
+    updateMessageJumpNav();
+  },
+  { passive: true },
+);
 els.resumeThreadId.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
