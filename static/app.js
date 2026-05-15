@@ -1,4 +1,5 @@
 const THREAD_CONFIG_STORAGE_KEY = "codexThreadConfigs.v1";
+const THREAD_HISTORY_PAGE_SIZE = 24;
 
 const state = {
   items: [],
@@ -21,6 +22,15 @@ const state = {
     },
     threadStatus: "",
     threadStatusMessage: "",
+    actionInFlight: "",
+    history: {
+      threadId: null,
+      cursor: null,
+      hasMore: false,
+      loading: false,
+      initialized: false,
+      loadedTurnIds: new Set(),
+    },
     tokenUsage: null,
     rateLimits: [],
     rateLimitError: "",
@@ -74,8 +84,14 @@ const els = {
   chatCwd: document.getElementById("chatCwd"),
   chatLog: document.getElementById("chatLog"),
   chatComposer: document.getElementById("chatComposer"),
+  composerTools: document.getElementById("composerTools"),
   chatInput: document.getElementById("chatInput"),
   sendCodexMessage: document.getElementById("sendCodexMessage"),
+  compactThread: document.getElementById("compactThread"),
+  reviewThread: document.getElementById("reviewThread"),
+  forkThread: document.getElementById("forkThread"),
+  moreThreadActions: document.getElementById("moreThreadActions"),
+  moreThreadActionsMenu: document.getElementById("moreThreadActionsMenu"),
   chatCwdButton: document.getElementById("chatCwdButton"),
   chatCwdMenu: document.getElementById("chatCwdMenu"),
   chatModel: document.getElementById("chatModel"),
@@ -871,6 +887,7 @@ function closeChoiceMenus() {
     menu.hidden = true;
     button.setAttribute("aria-expanded", "false");
   }
+  closeThreadActionMenu();
   closeResumePopover();
 }
 
@@ -1365,13 +1382,15 @@ async function resumeCodexThreadById() {
   const config = await ensureThreadConfig(threadId);
   const options = optionsFromThreadConfig(config);
   if (hasThreadConfigValues(config)) applyThreadConfigToControls(config);
-  const result = await postJson("/api/codex/resume", { threadId, ...options });
-  const id = result.thread && result.thread.id;
+  const result = await postJson("/api/codex/resume", { threadId, ...options, excludeTurns: true });
+  const id = (result.thread && result.thread.id) || threadId;
   if (id) rememberThreadConfigFromCodexResult(id, result, options);
   resetChatTranscript();
   if (id) setActiveThread(id);
-  renderResumedThread(result);
+  initializeHistoryPaging(id);
   closeResumePopover();
+  setChatActivity("Loading history");
+  await loadInitialThreadHistory(id);
   setChatActivity("Ready");
 }
 
@@ -1414,6 +1433,161 @@ async function interruptCodexTurn() {
   } catch (error) {
     appendChatLine("error", error.message);
   }
+}
+
+function activeThreadForAction(actionLabel) {
+  if (!state.codex.threadId) {
+    appendChatLine("warning", `Start or resume a thread before using ${actionLabel}.`);
+    return "";
+  }
+  if (state.codex.turnId) {
+    appendChatLine("warning", `Wait for the current turn to finish before using ${actionLabel}.`);
+    return "";
+  }
+  return state.codex.threadId;
+}
+
+async function runThreadAction(actionLabel, callback) {
+  const threadId = activeThreadForAction(actionLabel);
+  if (!threadId) return null;
+  closeThreadActionMenu();
+  state.codex.actionInFlight = actionLabel;
+  setChatActivity(actionLabel);
+  try {
+    return await callback(threadId);
+  } catch (error) {
+    appendChatLine("error", error.message);
+    return null;
+  } finally {
+    if (state.codex.actionInFlight === actionLabel) state.codex.actionInFlight = "";
+    if (!state.codex.turnId && state.codex.activity === actionLabel) setChatActivity("");
+    else renderChatStatus();
+  }
+}
+
+async function compactActiveThread() {
+  await runThreadAction("Compacting context", async (threadId) => {
+    appendCompactInfo("Compaction requested");
+    await postJson("/api/codex/compact", { threadId });
+  });
+}
+
+async function reviewActiveThread() {
+  await runThreadAction("Starting review", async (threadId) => {
+    await postJson("/api/codex/review", {
+      threadId,
+      target: { type: "uncommittedChanges" },
+      delivery: "inline",
+    });
+    appendCompactInfo("Review started");
+  });
+}
+
+async function forkActiveThread() {
+  await runThreadAction("Forking thread", async (threadId) => {
+    await loadCodexModels();
+    saveActiveThreadConfig();
+    const sourceThreadId = threadId;
+    const activeConfig = state.threadConfigs[sourceThreadId] || chatOptions();
+    const options = optionsFromThreadConfig(activeConfig);
+    const result = await postJson("/api/codex/fork", { threadId: sourceThreadId, ...options });
+    const id = result.thread && result.thread.id;
+    if (!id) throw new Error("Fork did not return a thread id.");
+    if (id) rememberThreadConfigFromCodexResult(id, result, options);
+    resetChatTranscript();
+    setActiveThread(id);
+    initializeHistoryPaging(id);
+    appendCompactInfo(`Forked from ${shortId(sourceThreadId)}`);
+    await loadInitialThreadHistory(id);
+    setChatActivity("Ready");
+    loadThreads().catch((error) => console.debug("[threads refresh]", error.message));
+  });
+}
+
+async function rollbackActiveThread() {
+  const threadId = activeThreadForAction("Rollback");
+  if (!threadId) return;
+  const ok = window.confirm("Rollback the last turn in this thread? File changes on disk will not be reverted.");
+  if (!ok) return;
+  await runThreadAction("Rolling back", async () => {
+    await postJson("/api/codex/rollback", { threadId, numTurns: 1 });
+    resetChatTranscript();
+    setActiveThread(threadId);
+    initializeHistoryPaging(threadId);
+    appendCompactInfo("Rolled back last turn");
+    await loadInitialThreadHistory(threadId);
+    loadThreads().catch((error) => console.debug("[threads refresh]", error.message));
+  });
+}
+
+async function renameActiveThread() {
+  const threadId = activeThreadForAction("Rename");
+  if (!threadId) return;
+  const item = state.items.find((entry) => entry.id === threadId);
+  const currentName = item?.title || item?.preview || "";
+  const name = window.prompt("Thread name", currentName);
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (!trimmed) {
+    appendChatLine("warning", "Thread name cannot be empty.");
+    return;
+  }
+  await runThreadAction("Renaming thread", async () => {
+    await postJson("/api/codex/rename", { threadId, name: trimmed });
+    appendCompactInfo("Thread renamed");
+    loadThreads().catch((error) => console.debug("[threads refresh]", error.message));
+  });
+}
+
+async function archiveActiveThread() {
+  const threadId = activeThreadForAction("Archive");
+  if (!threadId) return;
+  const ok = window.confirm("Archive this thread?");
+  if (!ok) return;
+  await runThreadAction("Archiving thread", async () => {
+    await postJson("/api/codex/archive", { threadId });
+    appendCompactInfo("Thread archived");
+    loadThreads().catch((error) => console.debug("[threads refresh]", error.message));
+  });
+}
+
+async function runShellCommandInThread() {
+  const threadId = activeThreadForAction("Shell command");
+  if (!threadId) return;
+  const command = window.prompt("Shell command to run in this Codex thread");
+  if (command === null) return;
+  const trimmed = command.trim();
+  if (!trimmed) return;
+  const ok = window.confirm("Run this command with full local filesystem access?");
+  if (!ok) return;
+  await runThreadAction("Running shell command", async () => {
+    await postJson("/api/codex/shell-command", { threadId, command: trimmed });
+    appendCompactInfo("Shell command sent");
+  });
+}
+
+function toggleThreadActionMenu() {
+  const willOpen = els.moreThreadActionsMenu.hidden;
+  closeChoiceMenus();
+  els.moreThreadActionsMenu.hidden = !willOpen;
+  els.moreThreadActions.setAttribute("aria-expanded", willOpen ? "true" : "false");
+}
+
+function closeThreadActionMenu() {
+  if (!els.moreThreadActions || !els.moreThreadActionsMenu) return;
+  els.moreThreadActionsMenu.hidden = true;
+  els.moreThreadActions.setAttribute("aria-expanded", "false");
+}
+
+function handleThreadActionMenuClick(event) {
+  const button = event.target instanceof Element ? event.target.closest("[data-thread-action]") : null;
+  if (!button) return;
+  const action = button.getAttribute("data-thread-action");
+  closeThreadActionMenu();
+  if (action === "rollback") rollbackActiveThread();
+  else if (action === "rename") renameActiveThread();
+  else if (action === "archive") archiveActiveThread();
+  else if (action === "shell") runShellCommandInThread();
 }
 
 function renderServerRequest(request) {
@@ -1504,23 +1678,93 @@ function ensureAgentMessage(itemId) {
   return entry;
 }
 
+function createUserMessageNode(text) {
+  const entry = document.createElement("article");
+  entry.className = "transcript-message user";
+  const marker = document.createElement("div");
+  marker.className = "prompt-marker";
+  marker.textContent = "›";
+  const body = document.createElement("div");
+  body.className = "transcript-body user-text";
+  body.textContent = text || "";
+  entry.append(marker, body);
+  return entry;
+}
+
+function createAgentMessageNode(itemId, text) {
+  const nodeId = `agent-${safeId(itemId)}`;
+  if (document.getElementById(nodeId)) return null;
+  const entry = document.createElement("article");
+  entry.id = nodeId;
+  entry.className = "transcript-message assistant";
+  entry.dataset.raw = text || "";
+  const gutter = document.createElement("div");
+  gutter.className = "transcript-gutter";
+  gutter.textContent = "Codex";
+  const body = document.createElement("div");
+  body.className = "transcript-body markdown-body";
+  body.innerHTML = markdownToHtml(entry.dataset.raw || "");
+  entry.append(gutter, body);
+  return entry;
+}
+
+function createReasoningNode(item) {
+  const id = item.id || "reasoning";
+  const nodeId = `reasoning-${safeId(id)}`;
+  if (document.getElementById(nodeId)) return null;
+  const text = reasoningText(item) || "";
+  const visible = visibleReasoningSummary(text);
+  if (!visible) return null;
+  const node = document.createElement("article");
+  node.id = nodeId;
+  node.className = "reasoning-card";
+  node.innerHTML = `<div class="reasoning-content">${markdownToHtml(visible)}</div>`;
+  state.codex.reasoningNodes[id] = node;
+  return node;
+}
+
+function createPlanNode(itemId, text, streaming = false) {
+  const id = itemId || "plan";
+  const nodeId = `tool-${safeId(id)}`;
+  if (document.getElementById(nodeId)) return null;
+  const card = document.createElement("article");
+  card.id = nodeId;
+  card.className = "plan-card proposed";
+  card.innerHTML = `
+    <div class="tool-title"><span>Proposed Plan</span><em>${streaming ? "drafting" : "ready"}</em></div>
+    <div class="markdown-body">${markdownToHtml(text || "(empty)")}</div>
+  `;
+  state.codex.itemNodes[id] = card;
+  return card;
+}
+
+function createToolItemNode(item, lifecycle, options = {}) {
+  const id = item.id || `${item.type}-${Object.keys(state.codex.itemNodes).length}`;
+  const nodeId = `tool-${safeId(id)}`;
+  if (document.getElementById(nodeId)) return null;
+  const card = document.createElement("article");
+  card.id = nodeId;
+  card.className = `tool-card ${safeId(item.type)} ${statusClass(item.status || lifecycle)}`;
+  card.innerHTML = toolItemHtml(item, lifecycle);
+  state.codex.itemNodes[id] = card;
+  if (item.type === "commandExecution" && item.aggregatedOutput) {
+    state.codex.commandOutputs[id] = item.aggregatedOutput;
+  }
+  if (options.syncSidebar) syncToolSidebarState(item, lifecycle);
+  return card;
+}
+
 function appendChatLine(kind, text) {
   if (kind === "system" || kind === "log" || kind === "diff") {
     setChatActivity(text || "");
     return;
   }
 
-  const entry = document.createElement("article");
+  let entry = null;
   if (kind === "user") {
-    entry.className = "transcript-message user";
-    const marker = document.createElement("div");
-    marker.className = "prompt-marker";
-    marker.textContent = "›";
-    const body = document.createElement("div");
-    body.className = "transcript-body user-text";
-    body.textContent = text || "";
-    entry.append(marker, body);
+    entry = createUserMessageNode(text);
   } else {
+    entry = document.createElement("article");
     entry.className = `transcript-event ${safeId(kind)}`;
     const title = document.createElement("div");
     title.className = "event-title";
@@ -2067,10 +2311,15 @@ function approvalSummary(params) {
   return params.command || params.reason || params.summary || params.path || "Review request";
 }
 
-function appendCompactInfo(text) {
+function createCompactInfoNode(text) {
   const entry = document.createElement("article");
   entry.className = "transcript-info";
   entry.textContent = text;
+  return entry;
+}
+
+function appendCompactInfo(text) {
+  const entry = createCompactInfoNode(text);
   els.chatLog.appendChild(entry);
   scrollChatToBottom();
 }
@@ -2452,6 +2701,215 @@ function updateThreadStatus(params) {
   }
 }
 
+function resetHistoryPaging(threadId = null) {
+  state.codex.history = {
+    threadId,
+    cursor: null,
+    hasMore: false,
+    loading: false,
+    initialized: false,
+    loadedTurnIds: new Set(),
+  };
+  const loader = document.getElementById("historyLoader");
+  if (loader) loader.hidden = true;
+}
+
+function initializeHistoryPaging(threadId) {
+  resetHistoryPaging(threadId);
+}
+
+async function loadInitialThreadHistory(threadId) {
+  if (!threadId) return;
+  if (state.codex.history.threadId !== threadId) initializeHistoryPaging(threadId);
+  try {
+    await loadThreadHistoryPage("append");
+    await fillHistoryViewportIfNeeded();
+  } catch (error) {
+    state.codex.history.initialized = true;
+    appendChatLine("error", `History load failed: ${error.message}`);
+  }
+}
+
+async function loadOlderThreadHistory() {
+  try {
+    await loadThreadHistoryPage("prepend");
+  } catch (error) {
+    prependHistoryNotice(`Could not load earlier history: ${error.message}`);
+  }
+}
+
+async function loadThreadHistoryPage(placement) {
+  const history = state.codex.history;
+  if (!history.threadId || history.loading) return;
+  if (placement === "prepend" && (!history.initialized || !history.hasMore || !history.cursor)) return;
+
+  const anchor = placement === "prepend" ? firstTranscriptContentNode() : null;
+  const anchorTop = anchor ? anchor.getBoundingClientRect().top : null;
+  history.loading = true;
+  setHistoryLoading(true, placement === "prepend" ? "Loading earlier history" : "Loading recent history");
+
+  try {
+    const request = {
+      threadId: history.threadId,
+      limit: THREAD_HISTORY_PAGE_SIZE,
+      sortDirection: "desc",
+      itemsView: "full",
+    };
+    if (placement === "prepend" && history.cursor) request.cursor = history.cursor;
+
+    const result = await postJson("/api/codex/turns", request);
+    if (state.codex.history !== history || state.codex.history.threadId !== request.threadId) return;
+
+    const pageTurns = Array.isArray(result.data) ? result.data : [];
+    const newTurns = pageTurns.filter((turn) => {
+      const id = turn && turn.id;
+      return id && !history.loadedTurnIds.has(id);
+    });
+
+    history.cursor = result.nextCursor || null;
+    history.hasMore = Boolean(result.nextCursor);
+    history.initialized = true;
+
+    if (!pageTurns.length && placement === "append") {
+      appendCompactInfo("Resumed thread; no history was returned.");
+    } else if (newTurns.length) {
+      if (placement === "append") appendCompactInfo(`Loaded latest ${formatNumber(newTurns.length)} turns`);
+      renderThreadHistoryTurns(newTurns, placement, { order: "desc" });
+      for (const turn of newTurns) history.loadedTurnIds.add(turn.id);
+    }
+  } finally {
+    history.loading = false;
+    setHistoryLoading(false);
+    if (anchor && anchorTop !== null) {
+      const newTop = anchor.getBoundingClientRect().top;
+      els.chatLog.scrollTop += newTop - anchorTop;
+    }
+  }
+}
+
+function maybeLoadOlderHistory() {
+  const history = state.codex.history;
+  if (!history.threadId || !history.initialized || history.loading || !history.hasMore) return;
+  if (els.chatLog.scrollTop > 72) return;
+  loadOlderThreadHistory();
+}
+
+async function fillHistoryViewportIfNeeded() {
+  let loadedPages = 0;
+  while (
+    state.codex.history.threadId &&
+    state.codex.history.hasMore &&
+    !state.codex.history.loading &&
+    els.chatLog.scrollHeight <= els.chatLog.clientHeight + 72 &&
+    loadedPages < 3
+  ) {
+    loadedPages += 1;
+    await loadThreadHistoryPage("prepend");
+  }
+}
+
+function setHistoryLoading(loading, label = "Loading history") {
+  const loader = ensureHistoryLoader();
+  loader.hidden = !loading;
+  const text = loader.querySelector(".history-loader-text");
+  if (text) text.textContent = label;
+  updateChatEmptyState();
+}
+
+function ensureHistoryLoader() {
+  let loader = document.getElementById("historyLoader");
+  if (loader) return loader;
+  loader = document.createElement("article");
+  loader.id = "historyLoader";
+  loader.className = "history-loader";
+  loader.hidden = true;
+  loader.innerHTML = '<span class="history-spinner" aria-hidden="true"></span><span class="history-loader-text">Loading history</span>';
+  const empty = document.getElementById("chatEmptyState");
+  if (empty && empty.parentNode === els.chatLog) empty.after(loader);
+  else els.chatLog.prepend(loader);
+  return loader;
+}
+
+function firstTranscriptContentNode() {
+  return Array.from(els.chatLog.children).find((node) => !isChatUtilityNode(node)) || null;
+}
+
+function isChatUtilityNode(node) {
+  return node.id === "chatEmptyState" || node.id === "historyLoader";
+}
+
+function prependHistoryNotice(text) {
+  const anchor = firstTranscriptContentNode();
+  const anchorTop = anchor ? anchor.getBoundingClientRect().top : null;
+  const node = createCompactInfoNode(text);
+  const before = firstTranscriptContentNode();
+  els.chatLog.insertBefore(node, before);
+  updateChatEmptyState();
+  if (anchor && anchorTop !== null) {
+    const newTop = anchor.getBoundingClientRect().top;
+    els.chatLog.scrollTop += newTop - anchorTop;
+  }
+}
+
+function renderThreadHistoryTurns(turns, placement, options = {}) {
+  const chronologicalTurns = options.order === "desc" ? [...turns].reverse() : [...turns];
+  const fragment = document.createDocumentFragment();
+  chronologicalTurns.forEach((turn, turnIndex) => {
+    renderHistoricalTurnInto(fragment, turn, turnIndex, {
+      syncSidebar: placement === "append",
+    });
+  });
+
+  if (placement === "prepend") {
+    const before = firstTranscriptContentNode();
+    els.chatLog.insertBefore(fragment, before);
+    updateChatEmptyState();
+    return;
+  }
+
+  els.chatLog.appendChild(fragment);
+  scrollChatToBottom();
+}
+
+function renderHistoricalTurnInto(parent, turn, turnIndex, options = {}) {
+  const items = historicalTurnItems(turn);
+  if (!items.length && turn.input) {
+    parent.appendChild(createUserMessageNode(textFromContent(turn.input)));
+    return;
+  }
+  items.forEach((item, itemIndex) => {
+    const node = createHistoricalItemNode(item, turn, turnIndex, itemIndex, options);
+    if (node) parent.appendChild(node);
+  });
+}
+
+function createHistoricalItemNode(item, turn, turnIndex, itemIndex, options = {}) {
+  if (!item || typeof item !== "object") return null;
+  const type = item.type || item.kind || "";
+  const id = item.id || `history-${turn?.id || turnIndex}-${itemIndex}`;
+
+  if (type === "userMessage" || type === "user_message" || item.role === "user") {
+    return createUserMessageNode(itemText(item));
+  }
+  if (type === "agentMessage" || type === "agent_message" || item.role === "assistant") {
+    return createAgentMessageNode(id, itemText(item));
+  }
+  if (type === "reasoning") {
+    return createReasoningNode({ ...item, id });
+  }
+  if (type === "plan") {
+    return createPlanNode(id, item.text || itemText(item), false);
+  }
+  if (type === "contextCompaction") {
+    return createCompactInfoNode("Context compacted");
+  }
+  if (type === "enteredReviewMode" || type === "exitedReviewMode") {
+    return createCompactInfoNode(type === "enteredReviewMode" ? "Review mode" : "Exited review mode");
+  }
+  if (!shouldRenderToolItem({ ...item, id, type }, "completed")) return null;
+  return createToolItemNode({ ...item, id, type }, "completed", options);
+}
+
 function renderResumedThread(result) {
   const thread = result.thread || result;
   const turns = Array.isArray(thread.turns) ? thread.turns : Array.isArray(result.turns) ? result.turns : [];
@@ -2461,14 +2919,7 @@ function renderResumedThread(result) {
   }
 
   appendCompactInfo(`Resumed ${formatNumber(turns.length)} previous turns`);
-  turns.forEach((turn, turnIndex) => {
-    const items = historicalTurnItems(turn);
-    if (!items.length && turn.input) {
-      appendChatLine("user", textFromContent(turn.input));
-      return;
-    }
-    items.forEach((item, itemIndex) => renderHistoricalItem(item, turnIndex, itemIndex));
-  });
+  renderThreadHistoryTurns(turns, "append");
 }
 
 function historicalTurnItems(turn) {
@@ -2567,6 +3018,7 @@ function resetChatTranscript() {
   state.codex.changedFiles = [];
   state.codex.runningCommand = "";
   state.codex.tokenUsage = null;
+  resetHistoryPaging();
   syncActionAvailability();
   renderChatThreadLine();
   renderChatEmptyState();
@@ -2574,7 +3026,10 @@ function resetChatTranscript() {
 }
 
 function chatHasMessages() {
-  return Array.from(els.chatLog.children).some((node) => node.id !== "chatEmptyState");
+  return Array.from(els.chatLog.children).some((node) => {
+    if (node.id === "historyLoader") return !node.hidden;
+    return node.id !== "chatEmptyState";
+  });
 }
 
 function renderChatEmptyState() {
@@ -2638,13 +3093,25 @@ function renderChatStatus() {
 function currentSessionStatus() {
   const bridge = state.codex.bridge;
   if (bridge.lastError) return "Error";
-  return state.codex.turnId ? "Working" : bridge.initialized ? "Ready" : bridge.running ? "Starting" : "Idle";
+  return state.codex.turnId || state.codex.actionInFlight ? "Working" : bridge.initialized ? "Ready" : bridge.running ? "Starting" : "Idle";
 }
 
 function syncActionAvailability() {
   const running = Boolean(state.codex.turnId);
+  const busy = Boolean(state.codex.actionInFlight);
+  const hasThread = Boolean(state.codex.threadId);
+  const threadActionDisabled = !hasThread || running || busy;
   els.interruptCodexTurn.hidden = !running;
   els.interruptCodexTurn.disabled = !running;
+  for (const button of [els.compactThread, els.reviewThread, els.forkThread, els.moreThreadActions]) {
+    if (button) button.disabled = threadActionDisabled;
+  }
+  if (els.moreThreadActionsMenu) {
+    for (const button of els.moreThreadActionsMenu.querySelectorAll("button")) {
+      button.disabled = threadActionDisabled;
+    }
+  }
+  if (threadActionDisabled) closeThreadActionMenu();
 }
 
 function toggleDetailsPanel() {
@@ -3090,6 +3557,11 @@ els.chatInput.addEventListener("keydown", (event) => {
 els.chatInput.addEventListener("input", autoSizeChatInput);
 els.chatInput.addEventListener("input", updateComposerState);
 window.addEventListener("resize", autoSizeChatInput);
+els.compactThread.addEventListener("click", () => compactActiveThread());
+els.reviewThread.addEventListener("click", () => reviewActiveThread());
+els.forkThread.addEventListener("click", () => forkActiveThread());
+els.moreThreadActions.addEventListener("click", toggleThreadActionMenu);
+els.moreThreadActionsMenu.addEventListener("click", handleThreadActionMenuClick);
 els.chatCwdButton.addEventListener("click", () => {
   toggleChoiceMenu(els.chatCwdMenu, els.chatCwdButton);
   if (!els.chatCwdMenu.hidden) {
@@ -3169,6 +3641,7 @@ els.chatLog.addEventListener("click", (event) => {
     collapseButton.textContent = anyOpen ? "Show details" : "Collapse";
   }
 });
+els.chatLog.addEventListener("scroll", maybeLoadOlderHistory, { passive: true });
 els.resumeThreadId.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
@@ -3178,6 +3651,7 @@ els.resumeThreadId.addEventListener("keydown", (event) => {
 document.addEventListener("click", (event) => {
   if (event.target instanceof Element && event.target.closest(".choice-control")) return;
   if (event.target instanceof Element && event.target.closest(".resume-action")) return;
+  if (event.target instanceof Element && event.target.closest(".more-action")) return;
   closeChoiceMenus();
 });
 document.addEventListener("keydown", (event) => {

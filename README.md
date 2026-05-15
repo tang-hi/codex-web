@@ -7,7 +7,7 @@
 - `Threads` tab 展示 thread 列表、搜索、过滤、排序和详情预览
 - `Web Chat` tab 通过本机 `codex app-server` 跟 Codex 交互，支持选择 CWD、模型、reasoning effort、Fast mode
 
-默认监听所有网卡，允许同一局域网内的设备访问；服务不会修改 Codex 的任何本地数据。
+默认监听所有网卡，允许同一局域网内的设备访问；Web Chat 中的 thread 操作会通过本机 `codex app-server` 执行。
 
 ## 启动
 
@@ -49,8 +49,10 @@ python3 -m codex_threads_manager.server --host 127.0.0.1 --port 3217
 - `GET /api/codex/events`，Codex 事件 SSE 流
 - `POST /api/codex/start`，启动新 Codex thread
 - `POST /api/codex/resume`，恢复已有 Codex thread
+- `POST /api/codex/turns`，按 cursor 分页读取 thread turns
 - `POST /api/codex/turn`，向当前 thread 发送一轮输入
 - `POST /api/codex/interrupt`，中断当前 turn
+- `POST /api/codex/compact|review|fork|rollback|archive|rename|shell-command`，触发 Codex thread 操作
 
 Codex 交互功能会由本服务按需启动：
 

@@ -137,6 +137,29 @@
           <form class="chat-composer" id="chatComposer">
             <div class="composer-content">
               <div class="composer-surface">
+                <div class="composer-tools" id="composerTools" aria-label="Thread actions">
+                  <button id="compactThread" class="tool-chip" type="button" disabled>Compact</button>
+                  <button id="reviewThread" class="tool-chip" type="button" disabled>Review</button>
+                  <button id="forkThread" class="tool-chip" type="button" disabled>Fork</button>
+                  <div class="more-action">
+                    <button
+                      id="moreThreadActions"
+                      class="tool-chip"
+                      type="button"
+                      aria-haspopup="menu"
+                      aria-expanded="false"
+                      disabled
+                    >
+                      More
+                    </button>
+                    <div id="moreThreadActionsMenu" class="composer-action-menu" role="menu" hidden>
+                      <button type="button" data-thread-action="rollback" role="menuitem">Rollback last turn</button>
+                      <button type="button" data-thread-action="rename" role="menuitem">Rename thread</button>
+                      <button type="button" data-thread-action="archive" role="menuitem">Archive thread</button>
+                      <button type="button" data-thread-action="shell" role="menuitem">Shell command</button>
+                    </div>
+                  </div>
+                </div>
                 <textarea
                   id="chatInput"
                   rows="3"

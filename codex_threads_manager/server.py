@@ -92,6 +92,10 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
             self.handle_codex_resume()
             return
 
+        if parsed.path == "/api/codex/turns":
+            self.handle_codex_turns()
+            return
+
         if parsed.path == "/api/codex/turn":
             self.handle_codex_turn()
             return
@@ -102,6 +106,34 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/codex/interrupt":
             self.handle_codex_interrupt()
+            return
+
+        if parsed.path == "/api/codex/compact":
+            self.handle_codex_compact()
+            return
+
+        if parsed.path == "/api/codex/review":
+            self.handle_codex_review()
+            return
+
+        if parsed.path == "/api/codex/fork":
+            self.handle_codex_fork()
+            return
+
+        if parsed.path == "/api/codex/rollback":
+            self.handle_codex_rollback()
+            return
+
+        if parsed.path == "/api/codex/archive":
+            self.handle_codex_archive()
+            return
+
+        if parsed.path == "/api/codex/rename":
+            self.handle_codex_rename()
+            return
+
+        if parsed.path == "/api/codex/shell-command":
+            self.handle_codex_shell_command()
             return
 
         if parsed.path == "/api/codex/approval":
@@ -190,6 +222,27 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
                 optional_str(body.get("model")),
                 optional_str(body.get("effort")),
                 optional_str(body.get("serviceTier")),
+                bool(body.get("excludeTurns", False)),
+            )
+            self.send_json(result)
+        except (CodexBridgeError, ValueError) as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_codex_turns(self) -> None:
+        try:
+            body = self.read_json_body()
+            sort_direction = optional_str(body.get("sortDirection")) or "desc"
+            if sort_direction not in {"asc", "desc"}:
+                raise ValueError("sortDirection must be asc or desc")
+            items_view = optional_str(body.get("itemsView")) or "full"
+            if items_view not in {"notLoaded", "summary", "full"}:
+                raise ValueError("itemsView must be notLoaded, summary, or full")
+            result = self.bridge.list_thread_turns(
+                required_str(body, "threadId"),
+                cursor=optional_str(body.get("cursor")),
+                limit=min(parse_positive_int(body.get("limit"), 24), 100),
+                sort_direction=sort_direction,
+                items_view=items_view,
             )
             self.send_json(result)
         except (CodexBridgeError, ValueError) as exc:
@@ -228,6 +281,75 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
         try:
             body = self.read_json_body()
             result = self.bridge.interrupt_turn(required_str(body, "threadId"), required_str(body, "turnId"))
+            self.send_json(result)
+        except (CodexBridgeError, ValueError) as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_codex_compact(self) -> None:
+        try:
+            body = self.read_json_body()
+            result = self.bridge.compact_thread(required_str(body, "threadId"))
+            self.send_json(result)
+        except (CodexBridgeError, ValueError) as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_codex_review(self) -> None:
+        try:
+            body = self.read_json_body()
+            target = body.get("target")
+            if target is not None and not isinstance(target, dict):
+                raise ValueError("target must be an object")
+            delivery = optional_str(body.get("delivery")) or "inline"
+            if delivery not in {"inline", "detached"}:
+                raise ValueError("delivery must be inline or detached")
+            result = self.bridge.start_review(required_str(body, "threadId"), target, delivery)
+            self.send_json(result)
+        except (CodexBridgeError, ValueError) as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_codex_fork(self) -> None:
+        try:
+            body = self.read_json_body()
+            result = self.bridge.fork_thread(
+                required_str(body, "threadId"),
+                optional_str(body.get("cwd")),
+                optional_str(body.get("model")),
+                optional_str(body.get("effort")),
+                optional_str(body.get("serviceTier")),
+            )
+            self.send_json(result)
+        except (CodexBridgeError, ValueError) as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_codex_rollback(self) -> None:
+        try:
+            body = self.read_json_body()
+            num_turns = parse_positive_int(body.get("numTurns"), 1)
+            result = self.bridge.rollback_thread(required_str(body, "threadId"), num_turns)
+            self.send_json(result)
+        except (CodexBridgeError, ValueError) as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_codex_archive(self) -> None:
+        try:
+            body = self.read_json_body()
+            result = self.bridge.archive_thread(required_str(body, "threadId"))
+            self.send_json(result)
+        except (CodexBridgeError, ValueError) as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_codex_rename(self) -> None:
+        try:
+            body = self.read_json_body()
+            result = self.bridge.rename_thread(required_str(body, "threadId"), required_str(body, "name"))
+            self.send_json(result)
+        except (CodexBridgeError, ValueError) as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_codex_shell_command(self) -> None:
+        try:
+            body = self.read_json_body()
+            result = self.bridge.shell_command(required_str(body, "threadId"), required_str(body, "command"))
             self.send_json(result)
         except (CodexBridgeError, ValueError) as exc:
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
@@ -339,6 +461,16 @@ def parse_int(value: str | None, default: int) -> int:
         return default
 
 
+def parse_positive_int(value: object, default: int) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, parsed)
+
+
 def make_handler(index: CodexThreadIndex, bridge: CodexBridge) -> type[ThreadManagerHandler]:
     class BoundThreadManagerHandler(ThreadManagerHandler):
         pass
@@ -349,7 +481,7 @@ def make_handler(index: CodexThreadIndex, bridge: CodexBridge) -> type[ThreadMan
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Read-only local Web UI for Codex threads")
+    parser = argparse.ArgumentParser(description="Local Web UI for Codex threads")
     parser.add_argument("--host", default="0.0.0.0", help="bind host, defaults to 0.0.0.0")
     parser.add_argument("--port", type=int, default=3217, help="bind port, defaults to 3217")
     parser.add_argument("--codex-home", type=Path, default=default_codex_home(), help="Codex home directory")

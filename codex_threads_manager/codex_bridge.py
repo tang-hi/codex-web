@@ -99,10 +99,11 @@ class CodexBridge:
         model: str | None = None,
         effort: str | None = None,
         service_tier: str | None = None,
+        exclude_turns: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "threadId": thread_id,
-            "excludeTurns": False,
+            "excludeTurns": exclude_turns,
             "approvalPolicy": "never",
             "sandbox": "danger-full-access",
             "serviceName": "codex_web",
@@ -115,6 +116,25 @@ class CodexBridge:
         if effort:
             params["config"] = {"model_reasoning_effort": effort}
         return self.request("thread/resume", params)
+
+    def list_thread_turns(
+        self,
+        thread_id: str,
+        cursor: str | None = None,
+        limit: int | None = None,
+        sort_direction: str | None = None,
+        items_view: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"threadId": thread_id}
+        if cursor:
+            params["cursor"] = cursor
+        if limit is not None:
+            params["limit"] = limit
+        if sort_direction:
+            params["sortDirection"] = sort_direction
+        if items_view:
+            params["itemsView"] = items_view
+        return self.request("thread/turns/list", params, timeout=120)
 
     def start_turn(
         self,
@@ -152,6 +172,57 @@ class CodexBridge:
 
     def interrupt_turn(self, thread_id: str, turn_id: str) -> dict[str, Any]:
         return self.request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})
+
+    def compact_thread(self, thread_id: str) -> dict[str, Any]:
+        return self.request("thread/compact/start", {"threadId": thread_id}, timeout=120)
+
+    def fork_thread(
+        self,
+        thread_id: str,
+        cwd: str | None = None,
+        model: str | None = None,
+        effort: str | None = None,
+        service_tier: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "threadId": thread_id,
+            "approvalPolicy": "never",
+            "sandbox": "danger-full-access",
+            "serviceTier": service_tier,
+        }
+        if cwd:
+            params["cwd"] = cwd
+        if model:
+            params["model"] = model
+        if effort:
+            params["config"] = {"model_reasoning_effort": effort}
+        return self.request("thread/fork", params)
+
+    def rollback_thread(self, thread_id: str, num_turns: int = 1) -> dict[str, Any]:
+        return self.request("thread/rollback", {"threadId": thread_id, "numTurns": num_turns})
+
+    def archive_thread(self, thread_id: str) -> dict[str, Any]:
+        return self.request("thread/archive", {"threadId": thread_id})
+
+    def rename_thread(self, thread_id: str, name: str) -> dict[str, Any]:
+        return self.request("thread/name/set", {"threadId": thread_id, "name": name})
+
+    def start_review(
+        self,
+        thread_id: str,
+        target: dict[str, Any] | None = None,
+        delivery: str | None = "inline",
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "threadId": thread_id,
+            "target": target or {"type": "uncommittedChanges"},
+        }
+        if delivery:
+            params["delivery"] = delivery
+        return self.request("review/start", params)
+
+    def shell_command(self, thread_id: str, command: str) -> dict[str, Any]:
+        return self.request("thread/shellCommand", {"threadId": thread_id, "command": command})
 
     def list_models(self) -> dict[str, Any]:
         return self.request("model/list", {"includeHidden": False, "limit": 100})
