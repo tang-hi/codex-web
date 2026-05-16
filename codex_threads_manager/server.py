@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import difflib
 import json
 import mimetypes
@@ -9,6 +11,7 @@ import re
 import shlex
 import sys
 import time
+import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,6 +30,7 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
     index: CodexThreadIndex
     bridge: CodexBridge
     metadata: "ThreadMetadataStore"
+    attachments: "AttachmentStore"
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -56,6 +60,10 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/file":
             self.serve_project_file(first(parse_qs(parsed.query), "path"))
+            return
+
+        if parsed.path.startswith("/api/attachments/"):
+            self.serve_attachment(unquote(parsed.path.removeprefix("/api/attachments/")))
             return
 
         if parsed.path == "/api/threads":
@@ -107,6 +115,10 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/personalization/suggestions":
             self.handle_personalization_suggestions()
+            return
+
+        if parsed.path == "/api/attachments":
+            self.handle_attachment_upload()
             return
 
         if parsed.path.startswith("/api/thread-metadata/"):
@@ -205,19 +217,23 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
                 ephemeral=bool(body.get("ephemeral", False)),
             )
             message = optional_str(body.get("message"))
+            image_paths = parse_uploaded_image_paths(body.get("attachments"), self.attachments)
             turn = None
-            if message:
+            if message or image_paths:
                 thread_id = result.get("thread", {}).get("id")
                 if thread_id:
                     turn = self.bridge.start_turn(
                         thread_id,
-                        message,
+                        message or "",
                         optional_str(body.get("cwd")),
                         optional_str(body.get("model")),
                         optional_str(body.get("effort")),
                         optional_str(body.get("serviceTier")),
+                        image_paths,
                     )
             self.send_json({"threadStart": result, "turnStart": turn})
+        except ValueError as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
         except CodexBridgeError as exc:
             self.send_error_json(HTTPStatus.BAD_GATEWAY, str(exc))
 
@@ -273,7 +289,10 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
         try:
             body = self.read_json_body()
             thread_id = required_str(body, "threadId")
-            text = required_str(body, "text")
+            text = optional_str(body.get("text")) or ""
+            image_paths = parse_uploaded_image_paths(body.get("attachments"), self.attachments)
+            if not text and not image_paths:
+                raise ValueError("text or attachments are required")
             result = self.bridge.start_turn(
                 thread_id,
                 text,
@@ -281,6 +300,7 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
                 optional_str(body.get("model")),
                 optional_str(body.get("effort")),
                 optional_str(body.get("serviceTier")),
+                image_paths,
             )
             self.send_json(result)
         except (CodexBridgeError, ValueError) as exc:
@@ -292,7 +312,8 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
             result = self.bridge.steer_turn(
                 required_str(body, "threadId"),
                 required_str(body, "turnId"),
-                required_str(body, "text"),
+                optional_str(body.get("text")) or "",
+                parse_uploaded_image_paths(body.get("attachments"), self.attachments),
             )
             self.send_json(result)
         except (CodexBridgeError, ValueError) as exc:
@@ -424,6 +445,15 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
 
+    def handle_attachment_upload(self) -> None:
+        try:
+            body = self.read_json_body()
+            thread_id = required_str(body, "threadId")
+            files = body.get("files")
+            self.send_json({"attachments": self.attachments.save_images(thread_id, files)})
+        except (OSError, ValueError) as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
     def read_json_body(self) -> dict[str, object]:
         length = parse_int(self.headers.get("Content-Length"), 0)
         if length <= 0:
@@ -486,6 +516,26 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def serve_attachment(self, requested_path: str | None) -> None:
+        try:
+            attachment = self.attachments.resolve_url_path(requested_path or "")
+        except ValueError as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+
+        if not attachment.exists() or not attachment.is_file():
+            self.send_error_json(HTTPStatus.NOT_FOUND, "attachment not found")
+            return
+
+        body = attachment.read_bytes()
+        content_type = mimetypes.guess_type(attachment.name)[0] or "application/octet-stream"
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def send_json(self, payload: object, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -513,6 +563,134 @@ def first(query: dict[str, list[str]], key: str) -> str | None:
 AGENTS_MANAGED_START = "<!-- codex-web-managed:start -->"
 AGENTS_MANAGED_END = "<!-- codex-web-managed:end -->"
 THREAD_VISIBILITIES = {"active", "archived", "hidden"}
+MAX_IMAGES_PER_TURN = 5
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+IMAGE_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+
+
+class AttachmentStore:
+    def __init__(self, root: Path):
+        self.root = root.expanduser()
+
+    def save_images(self, thread_id: str, files: object) -> list[dict[str, object]]:
+        if not isinstance(files, list):
+            raise ValueError("files must be a list")
+        if not files:
+            raise ValueError("files must include at least one image")
+        if len(files) > MAX_IMAGES_PER_TURN:
+            raise ValueError(f"at most {MAX_IMAGES_PER_TURN} images can be attached")
+
+        thread_key = safe_attachment_segment(thread_id)
+        target_dir = self.root / thread_key
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        attachments: list[dict[str, object]] = []
+        for item in files:
+            if not isinstance(item, dict):
+                raise ValueError("each file must be an object")
+            name = optional_str(item.get("name")) or "image"
+            data_url = required_str(item, "dataUrl")
+            content = decode_image_data_url(data_url)
+            if len(content) > MAX_IMAGE_BYTES:
+                raise ValueError(f"{name} exceeds the {MAX_IMAGE_BYTES // (1024 * 1024)} MB image limit")
+            mime_type = sniff_image_type(content)
+            if mime_type not in IMAGE_TYPES:
+                raise ValueError(f"{name} is not a supported image")
+
+            filename = f"{uuid.uuid4().hex}{IMAGE_TYPES[mime_type]}"
+            path = (target_dir / filename).resolve()
+            self._ensure_inside_root(path)
+            path.write_bytes(content)
+            attachments.append(
+                {
+                    "id": f"{thread_key}/{filename}",
+                    "name": name,
+                    "mimeType": mime_type,
+                    "size": len(content),
+                    "path": str(path),
+                    "url": f"/api/attachments/{thread_key}/{filename}",
+                }
+            )
+        return attachments
+
+    def resolve_uploaded_path(self, value: str) -> Path:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            raise ValueError("attachment path must be absolute")
+        resolved = path.resolve()
+        self._ensure_inside_root(resolved)
+        if not resolved.exists() or not resolved.is_file():
+            raise ValueError("attachment file does not exist")
+        return resolved
+
+    def resolve_url_path(self, value: str) -> Path:
+        parts = [part for part in value.split("/") if part]
+        if len(parts) != 2:
+            raise ValueError("invalid attachment path")
+        thread_key, filename = parts
+        if safe_attachment_segment(thread_key) != thread_key or safe_attachment_segment(filename) != filename:
+            raise ValueError("invalid attachment path")
+        path = (self.root / thread_key / filename).resolve()
+        self._ensure_inside_root(path)
+        return path
+
+    def _ensure_inside_root(self, path: Path) -> None:
+        try:
+            path.relative_to(self.root.resolve())
+        except ValueError as exc:
+            raise ValueError("attachment must be inside upload storage") from exc
+
+
+def safe_attachment_segment(value: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
+    text = text.strip("._-")
+    return text[:120] or "thread"
+
+
+def decode_image_data_url(data_url: str) -> bytes:
+    header, separator, encoded = data_url.partition(",")
+    if separator != "," or not header.startswith("data:"):
+        raise ValueError("image data must be a data URL")
+    metadata = [part.lower() for part in header[5:].split(";")]
+    if "base64" not in metadata:
+        raise ValueError("image data URL must be base64 encoded")
+    try:
+        return base64.b64decode(encoded, validate=True)
+    except binascii.Error as exc:
+        raise ValueError("invalid image data") from exc
+
+
+def sniff_image_type(content: bytes) -> str:
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def parse_uploaded_image_paths(value: object, attachments: AttachmentStore) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("attachments must be a list")
+    if len(value) > MAX_IMAGES_PER_TURN:
+        raise ValueError(f"at most {MAX_IMAGES_PER_TURN} images can be attached")
+    paths: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("each attachment must be an object")
+        path = required_str(item, "path")
+        paths.append(str(attachments.resolve_uploaded_path(path)))
+    return paths
 
 
 class ThreadMetadataStore:
@@ -1077,13 +1255,19 @@ def parse_positive_int(value: object, default: int) -> int:
     return max(1, parsed)
 
 
-def make_handler(index: CodexThreadIndex, bridge: CodexBridge, metadata: "ThreadMetadataStore") -> type[ThreadManagerHandler]:
+def make_handler(
+    index: CodexThreadIndex,
+    bridge: CodexBridge,
+    metadata: "ThreadMetadataStore",
+    attachments: AttachmentStore,
+) -> type[ThreadManagerHandler]:
     class BoundThreadManagerHandler(ThreadManagerHandler):
         pass
 
     BoundThreadManagerHandler.index = index
     BoundThreadManagerHandler.bridge = bridge
     BoundThreadManagerHandler.metadata = metadata
+    BoundThreadManagerHandler.attachments = attachments
     return BoundThreadManagerHandler
 
 
@@ -1099,8 +1283,9 @@ def main(argv: list[str] | None = None) -> int:
     bridge = CodexBridge(PROJECT_ROOT)
     index.project_root = PROJECT_ROOT
     metadata = ThreadMetadataStore(args.codex_home / "codex-web-thread-metadata.json")
+    attachments = AttachmentStore(PROJECT_ROOT / ".codex-web-uploads")
 
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(index, bridge, metadata))
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(index, bridge, metadata, attachments))
     print(f"codex-web listening on http://{args.host}:{args.port}", flush=True)
     print(f"reading Codex data from {index.codex_home}", flush=True)
     try:

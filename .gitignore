@@ -4,3 +4,4 @@ __pycache__/
 .DS_Store
 .codex-web.pid
 codex-web.log
+.codex-web-uploads/

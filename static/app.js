@@ -3,6 +3,9 @@ const THREAD_METADATA_STORAGE_KEY = "codexThreadMetadata.v1";
 const AGENTS_DRAFT_STORAGE_KEY = "codexAgentsDraft.v1";
 const THREAD_HISTORY_PAGE_SIZE = 24;
 const THREAD_VISIBILITIES = new Set(["active", "archived", "hidden"]);
+const IMAGE_ATTACHMENT_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const MAX_IMAGE_ATTACHMENTS = 5;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
 const state = {
   items: [],
@@ -25,6 +28,8 @@ const state = {
   detailsTab: "overview",
   renameTargetThreadId: "",
   toastTimer: null,
+  composerAttachments: [],
+  composerUploading: false,
   personalization: {
     step: 1,
     suggestions: [],
@@ -111,6 +116,9 @@ const els = {
   chatComposer: document.getElementById("chatComposer"),
   composerTools: document.getElementById("composerTools"),
   chatInput: document.getElementById("chatInput"),
+  attachmentPreview: document.getElementById("attachmentPreview"),
+  attachImages: document.getElementById("attachImages"),
+  imageAttachmentInput: document.getElementById("imageAttachmentInput"),
   sendCodexMessage: document.getElementById("sendCodexMessage"),
   compactThread: document.getElementById("compactThread"),
   reviewThread: document.getElementById("reviewThread"),
@@ -2109,24 +2117,123 @@ async function resumeCodexThreadById() {
   setChatActivity("Ready");
 }
 
+function addImageAttachments(files) {
+  const candidates = Array.from(files || []).filter((file) => file && file.type && file.type.startsWith("image/"));
+  if (!candidates.length) return;
+
+  for (const file of candidates) {
+    if (!IMAGE_ATTACHMENT_TYPES.has(file.type)) {
+      showToast(`${file.name || "Image"} is not a supported image type.`);
+      continue;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      showToast(`${file.name || "Image"} exceeds the ${MAX_IMAGE_BYTES / (1024 * 1024)} MB limit.`);
+      continue;
+    }
+    if (state.composerAttachments.length >= MAX_IMAGE_ATTACHMENTS) {
+      showToast(`Attach up to ${MAX_IMAGE_ATTACHMENTS} images per message.`);
+      break;
+    }
+    state.composerAttachments.push({
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      file,
+      name: file.name || "image",
+      mimeType: file.type,
+      size: file.size,
+      previewUrl: URL.createObjectURL(file),
+    });
+  }
+
+  renderAttachmentPreview();
+  updateComposerState();
+}
+
+function removeImageAttachment(id) {
+  const index = state.composerAttachments.findIndex((item) => item.id === id);
+  if (index < 0) return;
+  const [removed] = state.composerAttachments.splice(index, 1);
+  if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+  renderAttachmentPreview();
+  updateComposerState();
+}
+
+function clearImageAttachments() {
+  for (const item of state.composerAttachments) {
+    if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+  }
+  state.composerAttachments = [];
+  renderAttachmentPreview();
+}
+
+function renderAttachmentPreview() {
+  if (!els.attachmentPreview) return;
+  const attachments = state.composerAttachments;
+  els.attachmentPreview.hidden = attachments.length === 0;
+  els.attachmentPreview.innerHTML = attachments
+    .map(
+      (item) => `
+        <div class="attachment-chip" data-attachment-id="${escapeAttr(item.id)}">
+          <img src="${escapeAttr(item.previewUrl)}" alt="" loading="lazy" />
+          <span title="${escapeAttr(item.name)}">${escapeHtml(item.name)}</span>
+          <button type="button" aria-label="Remove ${escapeAttr(item.name)}" data-remove-attachment="${escapeAttr(item.id)}">&times;</button>
+        </div>
+      `,
+    )
+    .join("");
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error(`Could not read ${file.name || "image"}`));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadImageAttachments(threadId, attachments) {
+  if (!attachments.length) return [];
+  state.composerUploading = true;
+  updateComposerState();
+  setChatActivity("Uploading images");
+  try {
+    const files = await Promise.all(
+      attachments.map(async (item) => ({
+        name: item.name,
+        mimeType: item.mimeType,
+        size: item.size,
+        dataUrl: await readFileAsDataUrl(item.file),
+      })),
+    );
+    const result = await postJson("/api/attachments", { threadId, files });
+    return Array.isArray(result.attachments) ? result.attachments : [];
+  } finally {
+    state.composerUploading = false;
+    updateComposerState();
+  }
+}
+
 async function sendCodexMessage(event) {
   event.preventDefault();
   const text = els.chatInput.value.trim();
-  if (!text) return;
-  els.chatInput.value = "";
-  autoSizeChatInput();
-  updateComposerState();
-  appendChatLine("user", text);
+  const attachments = [...state.composerAttachments];
+  if (!text && !attachments.length) return;
 
   try {
     await loadCodexModels();
     if (!state.codex.threadId) {
       await startNewCodexThread(false);
     }
+    const uploadedAttachments = await uploadImageAttachments(state.codex.threadId, attachments);
+    els.chatInput.value = "";
+    clearImageAttachments();
+    autoSizeChatInput();
+    updateComposerState();
+    appendChatLine("user", text, uploadedAttachments);
     saveActiveThreadConfig();
     const activeConfig = state.threadConfigs[state.codex.threadId];
     const options = activeConfig ? optionsFromThreadConfig(activeConfig) : chatOptions();
-    const body = { threadId: state.codex.threadId, text, ...options };
+    const body = { threadId: state.codex.threadId, text, attachments: uploadedAttachments, ...options };
     if (state.codex.turnId) {
       await postJson("/api/codex/steer", { ...body, turnId: state.codex.turnId });
     } else {
@@ -2398,7 +2505,7 @@ function ensureAgentMessage(itemId) {
   return entry;
 }
 
-function createUserMessageNode(text) {
+function createUserMessageNode(text, attachments = []) {
   const entry = document.createElement("article");
   entry.className = "transcript-message user";
   const marker = document.createElement("div");
@@ -2406,9 +2513,67 @@ function createUserMessageNode(text) {
   marker.textContent = "›";
   const body = document.createElement("div");
   body.className = "transcript-body user-text";
-  body.textContent = text || "";
+  const message = String(text || "");
+  if (message) {
+    const textNode = document.createElement("div");
+    textNode.className = "user-message-text";
+    textNode.textContent = message;
+    body.appendChild(textNode);
+  }
+  const images = normalizeUserAttachments(attachments);
+  if (images.length) {
+    body.appendChild(createUserAttachmentGallery(images));
+  }
   entry.append(marker, body);
   return entry;
+}
+
+function normalizeUserAttachments(attachments) {
+  return (attachments || [])
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const path = optionalText(item.path);
+      const url = optionalText(item.url) || attachmentUrlFromPath(path) || optionalText(item.imageUrl) || optionalText(item.image_url);
+      const name = optionalText(item.name) || optionalText(item.fileName) || optionalText(item.filename) || (path ? path.split("/").pop() : "image");
+      return { url, name, path };
+    })
+    .filter(Boolean);
+}
+
+function createUserAttachmentGallery(attachments) {
+  const gallery = document.createElement("div");
+  gallery.className = "user-attachments";
+  attachments.forEach((item) => {
+    const figure = document.createElement("figure");
+    figure.className = "user-attachment";
+    if (item.url) {
+      const img = document.createElement("img");
+      img.src = item.url;
+      img.alt = item.name || "Attached image";
+      img.loading = "lazy";
+      figure.appendChild(img);
+    } else {
+      const placeholder = document.createElement("div");
+      placeholder.className = "user-attachment-placeholder";
+      placeholder.textContent = "Image preview unavailable";
+      figure.appendChild(placeholder);
+    }
+    const caption = document.createElement("figcaption");
+    caption.textContent = item.name || "Attached image";
+    if (item.path) caption.title = item.path;
+    figure.appendChild(caption);
+    gallery.appendChild(figure);
+  });
+  return gallery;
+}
+
+function attachmentUrlFromPath(path) {
+  const value = String(path || "");
+  const marker = value.includes("/.codex-web-uploads/") ? "/.codex-web-uploads/" : "/codex-web-uploads/";
+  const index = value.indexOf(marker);
+  if (index < 0) return "";
+  const relative = value.slice(index + marker.length);
+  return `/api/attachments/${relative.split("/").map(encodeURIComponent).join("/")}`;
 }
 
 function createAgentMessageNode(itemId, text) {
@@ -2474,7 +2639,7 @@ function createToolItemNode(item, lifecycle, options = {}) {
   return card;
 }
 
-function appendChatLine(kind, text) {
+function appendChatLine(kind, text, attachments = []) {
   if (kind === "system" || kind === "log" || kind === "diff") {
     setChatActivity(text || "");
     return;
@@ -2482,7 +2647,7 @@ function appendChatLine(kind, text) {
 
   let entry = null;
   if (kind === "user") {
-    entry = createUserMessageNode(text);
+    entry = createUserMessageNode(text, attachments);
   } else {
     entry = document.createElement("article");
     entry.className = `transcript-event ${safeId(kind)}`;
@@ -3759,7 +3924,7 @@ function renderThreadHistoryTurns(turns, placement, options = {}) {
 function renderHistoricalTurnInto(parent, turn, turnIndex, options = {}) {
   const items = historicalTurnItems(turn);
   if (!items.length && turn.input) {
-    parent.appendChild(createUserMessageNode(textFromContent(turn.input)));
+    parent.appendChild(createUserMessageNode(textFromContent(turn.input), imagesFromContent(turn.input)));
     return;
   }
   items.forEach((item, itemIndex) => {
@@ -3774,7 +3939,7 @@ function createHistoricalItemNode(item, turn, turnIndex, itemIndex, options = {}
   const id = item.id || `history-${turn?.id || turnIndex}-${itemIndex}`;
 
   if (type === "userMessage" || type === "user_message" || item.role === "user") {
-    return createUserMessageNode(itemText(item));
+    return createUserMessageNode(itemText(item), imagesFromContent(item.content || item.input || item.fragments));
   }
   if (type === "agentMessage" || type === "agent_message" || item.role === "assistant") {
     return createAgentMessageNode(id, itemText(item));
@@ -3821,7 +3986,7 @@ function renderHistoricalItem(item, turnIndex, itemIndex) {
   const id = item.id || `history-${turnIndex}-${itemIndex}`;
 
   if (type === "userMessage" || type === "user_message" || item.role === "user") {
-    appendChatLine("user", itemText(item));
+    appendChatLine("user", itemText(item), imagesFromContent(item.content || item.input || item.fragments));
     return;
   }
   if (type === "agentMessage" || type === "agent_message" || item.role === "assistant") {
@@ -3875,6 +4040,30 @@ function textFromContent(value) {
     return value.text || value.content || value.inputText || value.input_text || "";
   }
   return "";
+}
+
+function imagesFromContent(value) {
+  if (!value) return [];
+  const values = Array.isArray(value) ? value : [value];
+  return values
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const type = item.type || item.kind || "";
+      if (type === "localImage") {
+        const path = optionalText(item.path);
+        return path ? { path, url: attachmentUrlFromPath(path), name: path.split("/").pop() || "image" } : null;
+      }
+      if (type === "image") {
+        const url = optionalText(item.url);
+        return url ? { url, name: "Attached image" } : null;
+      }
+      if (type === "input_image" || type === "inputImage") {
+        const url = optionalText(item.image_url) || optionalText(item.imageUrl);
+        return url ? { url, name: "Attached image" } : null;
+      }
+      return null;
+    })
+    .filter(Boolean);
 }
 
 function setActiveThread(id, options = {}) {
@@ -4831,7 +5020,10 @@ function setWorkspaceLabel(path) {
 }
 
 function updateComposerState() {
-  els.sendCodexMessage.disabled = !els.chatInput.value.trim();
+  els.sendCodexMessage.disabled = state.composerUploading || (!els.chatInput.value.trim() && state.composerAttachments.length === 0);
+  if (els.attachImages) {
+    els.attachImages.disabled = state.composerUploading || state.composerAttachments.length >= MAX_IMAGE_ATTACHMENTS;
+  }
 }
 
 function shortPath(path) {
@@ -5059,12 +5251,45 @@ function autoSizeChatInput() {
   input.style.overflowY = input.scrollHeight > maxHeight ? "auto" : "hidden";
 }
 
+function eventHasImageFiles(event) {
+  return Array.from(event.dataTransfer?.items || event.clipboardData?.items || []).some((item) => item.kind === "file" && item.type.startsWith("image/"));
+}
+
 els.chatComposer.addEventListener("submit", sendCodexMessage);
+els.attachImages.addEventListener("click", () => els.imageAttachmentInput.click());
+els.imageAttachmentInput.addEventListener("change", () => {
+  addImageAttachments(els.imageAttachmentInput.files);
+  els.imageAttachmentInput.value = "";
+});
+els.attachmentPreview.addEventListener("click", (event) => {
+  const button = event.target instanceof Element ? event.target.closest("[data-remove-attachment]") : null;
+  if (!button) return;
+  removeImageAttachment(button.dataset.removeAttachment || "");
+});
 els.chatInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.isComposing && (event.metaKey || event.ctrlKey || !event.shiftKey)) {
     event.preventDefault();
     els.chatComposer.requestSubmit();
   }
+});
+els.chatInput.addEventListener("paste", (event) => {
+  if (!eventHasImageFiles(event)) return;
+  addImageAttachments(Array.from(event.clipboardData.files || []));
+});
+els.chatComposer.addEventListener("dragover", (event) => {
+  if (!eventHasImageFiles(event)) return;
+  event.preventDefault();
+  els.chatComposer.classList.add("dragging-images");
+});
+els.chatComposer.addEventListener("dragleave", (event) => {
+  if (event.currentTarget.contains(event.relatedTarget)) return;
+  els.chatComposer.classList.remove("dragging-images");
+});
+els.chatComposer.addEventListener("drop", (event) => {
+  els.chatComposer.classList.remove("dragging-images");
+  if (!eventHasImageFiles(event)) return;
+  event.preventDefault();
+  addImageAttachments(Array.from(event.dataTransfer.files || []));
 });
 els.chatInput.addEventListener("input", autoSizeChatInput);
 els.chatInput.addEventListener("input", updateComposerState);

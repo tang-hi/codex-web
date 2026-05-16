@@ -115,8 +115,19 @@
                   aria-label="Message Codex"
                   placeholder="Ask Codex to inspect, edit, debug, or explain this project..."
                 ></textarea>
+                <div id="attachmentPreview" class="attachment-preview" hidden></div>
                 <div class="composer-footer">
-                  <span>Enter to send · Shift+Enter newline · Cmd/Ctrl+Enter send</span>
+                  <div class="composer-hints">
+                    <button id="attachImages" class="attach-button" type="button">Attach image</button>
+                    <span>Enter to send · Shift+Enter newline · Cmd/Ctrl+Enter send</span>
+                  </div>
+                  <input
+                    id="imageAttachmentInput"
+                    class="sr-only"
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    multiple
+                  />
                   <button id="sendCodexMessage" class="send-button" type="submit" disabled>Send</button>
                 </div>
               </div>

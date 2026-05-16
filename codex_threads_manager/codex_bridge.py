@@ -144,10 +144,11 @@ class CodexBridge:
         model: str | None = None,
         effort: str | None = None,
         service_tier: str | None = None,
+        image_paths: list[str] | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "threadId": thread_id,
-            "input": [{"type": "text", "text": text}],
+            "input": self._turn_input(text, image_paths),
             "approvalPolicy": "never",
             "sandboxPolicy": {"type": "dangerFullAccess"},
             "serviceTier": service_tier,
@@ -160,15 +161,26 @@ class CodexBridge:
             params["effort"] = effort
         return self.request("turn/start", params)
 
-    def steer_turn(self, thread_id: str, turn_id: str, text: str) -> dict[str, Any]:
+    def steer_turn(self, thread_id: str, turn_id: str, text: str, image_paths: list[str] | None = None) -> dict[str, Any]:
         return self.request(
             "turn/steer",
             {
                 "threadId": thread_id,
                 "expectedTurnId": turn_id,
-                "input": [{"type": "text", "text": text}],
+                "input": self._turn_input(text, image_paths),
             },
         )
+
+    @staticmethod
+    def _turn_input(text: str, image_paths: list[str] | None = None) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        if text.strip():
+            items.append({"type": "text", "text": text, "text_elements": []})
+        for path in image_paths or []:
+            items.append({"type": "localImage", "path": path})
+        if not items:
+            raise CodexBridgeError("turn input must include text or an image")
+        return items
 
     def interrupt_turn(self, thread_id: str, turn_id: str) -> dict[str, Any]:
         return self.request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})
