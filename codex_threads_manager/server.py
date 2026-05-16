@@ -9,7 +9,9 @@ import mimetypes
 import queue
 import re
 import shlex
+import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from http import HTTPStatus
@@ -19,7 +21,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .codex_bridge import CodexBridge
 from .codex_bridge import CodexBridgeError
-from .indexer import CodexThreadIndex, default_codex_home
+from .indexer import CodexThreadIndex, default_codex_home, epoch_to_iso, truncate
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -441,10 +443,11 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
     def handle_personalization_suggestions(self) -> None:
         try:
             body = self.read_json_body()
-            suggestions = personalization_suggestions(self.index, self.metadata, body)
-            self.send_json({"suggestions": suggestions})
-        except ValueError as exc:
+            self.send_json(personalization_suggestions(self.index, self.metadata, body))
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+        except Exception as exc:
+            self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"personalization analysis failed: {exc}")
 
     def handle_attachment_upload(self) -> None:
         try:
@@ -566,6 +569,9 @@ AGENTS_MANAGED_END = "<!-- codex-web-managed:end -->"
 THREAD_VISIBILITIES = {"active", "archived", "hidden"}
 MAX_IMAGES_PER_TURN = 5
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+PERSONALIZATION_MAX_THREADS = 80
+PERSONALIZATION_TIMEOUT_SECONDS = 600
+PERSONALIZATION_WORK_ROOT = PROJECT_ROOT / ".codex-web-personalize"
 IMAGE_TYPES = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
@@ -997,7 +1003,7 @@ def context_suggestions(items: list[dict[str, object]]) -> list[str]:
     return suggestions
 
 
-def personalization_suggestions(index: CodexThreadIndex, metadata: ThreadMetadataStore, body: dict[str, object]) -> list[dict[str, object]]:
+def personalization_suggestions(index: CodexThreadIndex, metadata: ThreadMetadataStore, body: dict[str, object]) -> dict[str, object]:
     scope = optional_str(body.get("scope")) or "current_project"
     include_values = body.get("include")
     include = set(include_values if isinstance(include_values, list) else ["active", "archived"])
@@ -1024,84 +1030,289 @@ def personalization_suggestions(index: CodexThreadIndex, metadata: ThreadMetadat
         records.append(record)
 
     records.sort(key=lambda item: item.updated_at or item.file_mtime or 0, reverse=True)
-    samples = thread_text_samples(index, records[:80])
-    return derive_personalization_suggestions(records, samples, project_path)
+    analyzed_records = records[:PERSONALIZATION_MAX_THREADS]
+    if not analyzed_records:
+        return {
+            "suggestions": [],
+            "analysis": {
+                "source": "codex_exec_ephemeral",
+                "status": "empty",
+                "summary": "No matching threads were available for analysis.",
+                "matchedThreadCount": len(records),
+                "analyzedThreadCount": 0,
+                "maxThreads": PERSONALIZATION_MAX_THREADS,
+            },
+        }
+
+    raw_result = run_codex_personalization_analysis(index, metadata, analyzed_records, body, len(records), project_path)
+    suggestions = normalize_personalization_suggestions(raw_result.get("suggestions"))
+    return {
+        "suggestions": suggestions,
+        "analysis": {
+            "source": "codex_exec_ephemeral",
+            "status": "complete",
+            "summary": optional_str(raw_result.get("summary")) or "Codex analyzed the selected thread rollouts.",
+            "matchedThreadCount": len(records),
+            "analyzedThreadCount": len(analyzed_records),
+            "maxThreads": PERSONALIZATION_MAX_THREADS,
+        },
+    }
 
 
-def thread_text_samples(index: CodexThreadIndex, records: list[object]) -> list[str]:
-    samples: list[str] = []
-    for record in records:
-        thread = index.get_thread(record.id)
-        if not thread:
-            continue
-        parts = [thread.get("title") or "", thread.get("preview") or ""]
-        for message in thread.get("messages") or []:
-            if isinstance(message, dict):
-                parts.append(optional_str(message.get("text")) or "")
-        text = "\n".join(part for part in parts if part)
-        if text:
-            samples.append(text[:8000])
-    return samples
+def run_codex_personalization_analysis(
+    index: CodexThreadIndex,
+    metadata: ThreadMetadataStore,
+    records: list[object],
+    body: dict[str, object],
+    matched_count: int,
+    project_path: str,
+) -> dict[str, object]:
+    PERSONALIZATION_WORK_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="run-", dir=PERSONALIZATION_WORK_ROOT) as tmp:
+        tmp_path = Path(tmp)
+        manifest_path = tmp_path / "thread-manifest.json"
+        schema_path = tmp_path / "personalization.schema.json"
+        output_path = tmp_path / "personalization-result.json"
+        manifest = personalization_manifest(index, metadata, records, body, matched_count, project_path)
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        schema_path.write_text(json.dumps(personalization_output_schema(), ensure_ascii=False, indent=2), encoding="utf-8")
+
+        command = codex_personalization_command(body, schema_path, output_path, index.codex_home)
+        process = subprocess.run(
+            command,
+            input=personalization_prompt(manifest_path),
+            cwd=str(PROJECT_ROOT),
+            text=True,
+            capture_output=True,
+            timeout=PERSONALIZATION_TIMEOUT_SECONDS,
+        )
+        if process.returncode != 0:
+            detail = (process.stderr or process.stdout or "").strip()
+            raise ValueError(f"Codex personalization analysis failed: {truncate(detail, 2000) or process.returncode}")
+        raw = output_path.read_text(encoding="utf-8") if output_path.exists() else process.stdout
+        parsed = parse_personalization_json(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("Codex personalization analysis did not return a JSON object")
+        return parsed
 
 
-def derive_personalization_suggestions(records: list[object], samples: list[str], project_path: str) -> list[dict[str, object]]:
-    corpus = "\n".join(samples)
-    lowered = corpus.casefold()
+def codex_personalization_command(
+    body: dict[str, object],
+    schema_path: Path,
+    output_path: Path,
+    codex_home: Path,
+) -> list[str]:
+    command = [
+        "codex",
+        "exec",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "--color",
+        "never",
+        "--output-schema",
+        str(schema_path),
+        "--output-last-message",
+        str(output_path),
+        "-C",
+        str(PROJECT_ROOT),
+        "--add-dir",
+        str(codex_home),
+        "-c",
+        'approval_policy="never"',
+    ]
+    model = optional_str(body.get("model"))
+    effort = optional_str(body.get("effort"))
+    service_tier = optional_str(body.get("serviceTier"))
+    if model:
+        command.extend(["--model", model])
+    if effort:
+        command.extend(["-c", f'model_reasoning_effort="{effort}"'])
+    if service_tier in {"fast", "flex"}:
+        command.extend(["-c", f'service_tier="{service_tier}"'])
+    command.append("-")
+    return command
+
+
+def personalization_manifest(
+    index: CodexThreadIndex,
+    metadata: ThreadMetadataStore,
+    records: list[object],
+    body: dict[str, object],
+    matched_count: int,
+    project_path: str,
+) -> dict[str, object]:
+    return {
+        "scope": optional_str(body.get("scope")) or "current_project",
+        "include": body.get("include") if isinstance(body.get("include"), list) else ["active", "archived"],
+        "projectPath": project_path,
+        "matchedThreadCount": matched_count,
+        "providedThreadCount": len(records),
+        "threads": [personalization_thread_entry(index, metadata, record) for record in records],
+    }
+
+
+def personalization_thread_entry(index: CodexThreadIndex, metadata: ThreadMetadataStore, record: object) -> dict[str, object]:
+    thread = index.get_thread(record.id) or {}
+    messages = thread.get("messages") if isinstance(thread.get("messages"), list) else []
+    return {
+        "threadId": record.id,
+        "title": record.title or thread.get("title") or "",
+        "preview": record.preview or thread.get("preview") or "",
+        "projectPath": record.cwd or "",
+        "visibility": metadata.visibility(record.id),
+        "createdAt": epoch_to_iso(record.created_at),
+        "updatedAt": epoch_to_iso(record.updated_at or record.file_mtime),
+        "rolloutPath": record.rollout_path or "",
+        "messagePreviewCount": len(messages),
+    }
+
+
+def personalization_prompt(manifest_path: Path) -> str:
+    return f"""You are analyzing Codex Web thread history to propose durable AGENTS.md rules.
+
+Read the JSON manifest at:
+{manifest_path}
+
+The manifest contains metadata and absolute rollout JSONL paths for the selected threads. Inspect the rollout files directly when evidence is needed; do not ask the user for more input.
+
+Return structured JSON only. Follow these rules:
+- Propose only reusable, durable workflow patterns.
+- Separate long-term personal preferences from project-specific conventions.
+- Do not include one-off task instructions, temporary requests, or low-confidence guesses.
+- Do not write files. This is analysis only.
+- Hidden threads are included only when the manifest says they were selected.
+- Every suggestion must include concise evidence from real threads: thread id, title, short excerpt, and date when available.
+- Prefer 3 to 8 high-signal suggestions over a long noisy list.
+
+Targets:
+- global_agents: stable personal preferences, response style, general coding or review habits.
+- project_agents: project paths, commands, architecture, and project-specific workflow.
+- ignore: only when a detected pattern is useful to show but should not be written.
+
+Use these category labels when appropriate: Coding workflow, Verification, Review style, Project convention, Operational preference, Other.
+"""
+
+
+def personalization_output_schema() -> dict[str, object]:
+    evidence_item = {
+        "type": "object",
+        "properties": {
+            "threadId": {"type": "string"},
+            "threadTitle": {"type": "string"},
+            "date": {"type": "string"},
+            "excerpt": {"type": "string"},
+        },
+        "required": ["threadId", "threadTitle", "date", "excerpt"],
+        "additionalProperties": False,
+    }
+    suggestion = {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"},
+            "category": {"type": "string"},
+            "target": {"type": "string", "enum": ["global_agents", "project_agents", "ignore"]},
+            "text": {"type": "string"},
+            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+            "evidenceCount": {"type": "integer"},
+            "evidence": {"type": "array", "items": evidence_item},
+            "selected": {"type": "boolean"},
+        },
+        "required": ["id", "category", "target", "text", "confidence", "evidenceCount", "evidence", "selected"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "suggestions": {"type": "array", "items": suggestion},
+        },
+        "required": ["summary", "suggestions"],
+        "additionalProperties": False,
+    }
+
+
+def parse_personalization_json(raw: str) -> object:
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(text[start : end + 1])
+        raise
+
+
+def normalize_personalization_suggestions(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
     suggestions: list[dict[str, object]] = []
-
-    def sample_match_count(pattern: str) -> int:
-        return sum(1 for sample in samples if re.search(pattern, sample.casefold()))
-
-    def add(
-        id_: str,
-        category: str,
-        target: str,
-        text: str,
-        evidence: str,
-        *,
-        confidence: str = "medium",
-        evidence_count: int = 0,
-    ) -> None:
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            continue
+        text = optional_str(item.get("text"))
+        if not text:
+            continue
+        target = optional_str(item.get("target")) or "global_agents"
+        if target not in {"global_agents", "project_agents", "ignore"}:
+            target = "global_agents"
+        confidence = optional_str(item.get("confidence")) or "medium"
+        if confidence not in {"low", "medium", "high"}:
+            confidence = "medium"
+        evidence_items = normalize_suggestion_evidence(item.get("evidence"))
+        evidence_count = parse_nonnegative_int(item.get("evidenceCount"), len(evidence_items))
+        suggestion_id = safe_attachment_segment(optional_str(item.get("id")) or f"suggestion-{index}")
+        if suggestion_id in seen:
+            suggestion_id = f"{suggestion_id}-{index}"
+        seen.add(suggestion_id)
         suggestions.append(
             {
-                "id": id_,
-                "category": category,
+                "id": suggestion_id,
+                "category": optional_str(item.get("category")) or "Other",
                 "target": target,
                 "text": text,
-                "evidence": evidence,
                 "confidence": confidence,
                 "evidenceCount": evidence_count,
-                "selected": True,
+                "evidence": evidence_items,
+                "selected": item.get("selected") is not False and target != "ignore",
             }
         )
-
-    minimal_pattern = r"小步|小改|minimal|focused|不要.*重构|unrelated|不要大规模"
-    verification_pattern = r"检查|验证|验收|node --check|pytest|ctest|run\\.sh|编译|测试"
-    explanation_pattern = r"前因后果|从哪里开始|解释|看代码|阅读"
-    ops_pattern = r"openclash|router|路由|配置|当前配置"
-
-    if re.search(minimal_pattern, lowered):
-        count = sample_match_count(minimal_pattern)
-        add("minimal-diffs", "Coding workflow", "global_agents", "Prefer focused, minimal diffs and avoid unrelated refactors unless explicitly requested.", "Detected repeated requests for small scoped changes.", confidence="high" if count >= 3 else "medium", evidence_count=count)
-    if re.search(verification_pattern, lowered):
-        count = sample_match_count(verification_pattern)
-        add("verification-summary", "Verification", "global_agents", "Include concise verification commands and results when finishing implementation work.", "Detected repeated emphasis on checks, builds, or acceptance.", confidence="high" if count >= 3 else "medium", evidence_count=count)
-    if re.search(explanation_pattern, lowered):
-        count = sample_match_count(explanation_pattern)
-        add("explain-causally", "Review style", "global_agents", "When explaining code, start from entry points and describe the causal chain before implementation details.", "Detected code-reading and explanation-oriented threads.", confidence="high" if count >= 3 else "medium", evidence_count=count)
-    if "codex-web" in project_path or any(getattr(record, "cwd", "") == PROJECT_ROOT.as_posix() for record in records):
-        js_check_pattern = r"node --check|static/app\\.js|frontend|前端|javascript"
-        thread_metadata_pattern = r"thread.*metadata|rename|archive|hide|restore|隐藏|归档|重命名|本地 metadata|local metadata"
-        if re.search(js_check_pattern, lowered):
-            count = sample_match_count(js_check_pattern)
-            add("codex-web-js-check", "Project convention", "project_agents", "For frontend JavaScript edits, run `node --check static/app.js` before finishing.", "Detected repeated codex-web frontend verification requests.", confidence="high" if count >= 2 else "medium", evidence_count=count)
-        if re.search(thread_metadata_pattern, lowered):
-            count = sample_match_count(thread_metadata_pattern)
-            add("codex-web-local-thread-metadata", "Project convention", "project_agents", "Thread rename, archive, hide, and restore are local metadata operations; do not call Codex rename, delete, or archive APIs for them.", "Detected codex-web thread-management requirements.", confidence="high" if count >= 2 else "medium", evidence_count=count)
-    if re.search(ops_pattern, lowered):
-        count = sample_match_count(ops_pattern)
-        add("inspect-live-config", "Operational preference", "global_agents", "For router or local-machine troubleshooting, inspect live state before giving generic advice.", "Detected operational troubleshooting threads.", confidence="medium", evidence_count=count)
     return suggestions
+
+
+def normalize_suggestion_evidence(value: object) -> list[dict[str, str]]:
+    if isinstance(value, str):
+        text = optional_str(value)
+        return [{"threadId": "", "threadTitle": "", "date": "", "excerpt": text}] if text else []
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, str]] = []
+    for item in value[:6]:
+        if isinstance(item, str):
+            text = optional_str(item)
+            if text:
+                result.append({"threadId": "", "threadTitle": "", "date": "", "excerpt": text})
+            continue
+        if not isinstance(item, dict):
+            continue
+        excerpt = optional_str(item.get("excerpt")) or optional_str(item.get("text"))
+        if not excerpt:
+            continue
+        result.append(
+            {
+                "threadId": optional_str(item.get("threadId")) or optional_str(item.get("thread_id")) or "",
+                "threadTitle": optional_str(item.get("threadTitle")) or optional_str(item.get("title")) or "",
+                "date": optional_str(item.get("date")) or optional_str(item.get("updatedAt")) or "",
+                "excerpt": truncate(excerpt, 500),
+            }
+        )
+    return result
 
 
 def text_from_any_content(value: object) -> str:
@@ -1280,6 +1491,16 @@ def parse_positive_int(value: object, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(1, parsed)
+
+
+def parse_nonnegative_int(value: object, default: int) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0, parsed)
 
 
 def make_handler(

@@ -41,6 +41,7 @@ const state = {
     step: 1,
     analyzing: false,
     analysisError: "",
+    analysisMeta: null,
     suggestions: [],
     preview: null,
     selectedThreadIds: new Set(),
@@ -1250,6 +1251,7 @@ function openPersonalizationWizard() {
   state.personalization.step = 1;
   state.personalization.analyzing = false;
   state.personalization.analysisError = "";
+  state.personalization.analysisMeta = null;
   state.personalization.preview = null;
   state.personalization.suggestions = [];
   if (!state.personalization.selectedThreadIds.size && state.codex.threadId) {
@@ -1321,6 +1323,7 @@ async function nextPersonalizationStep() {
   if (state.personalization.step === 2) {
     state.personalization.analyzing = true;
     state.personalization.analysisError = "";
+    state.personalization.analysisMeta = null;
     state.personalization.suggestions = [];
     state.personalization.preview = null;
     renderPersonalizationWizard();
@@ -1361,6 +1364,9 @@ function personalizationPayload() {
     include: personalizationIncludedVisibilities(),
     projectPath: state.projectRoot || els.chatCwd.value || "",
     selectedThreadIds: [...state.personalization.selectedThreadIds],
+    model: chatOptions().model,
+    effort: chatOptions().effort,
+    serviceTier: chatOptions().serviceTier,
   };
 }
 
@@ -1409,8 +1415,8 @@ function renderPersonalizationAnalyzeStep() {
   if (state.personalization.analyzing) {
     els.personalizationAnalysisState.hidden = false;
     els.personalizationAnalysisState.innerHTML = `
-      <strong>Analyzing threads...</strong>
-      <span>Reading ${escapeHtml(formatNumber(count))} ${count === 1 ? "thread" : "threads"} and generating candidate rules.</span>
+      <strong>Codex is analyzing threads...</strong>
+      <span>Running an ephemeral read-only Codex task over ${escapeHtml(formatNumber(count))} ${count === 1 ? "thread" : "threads"}. No thread will be created.</span>
     `;
     return;
   }
@@ -1435,12 +1441,14 @@ function personalizationScopeLabel(scope) {
 
 async function fetchPersonalizationSuggestions() {
   const data = await postJson("/api/personalization/suggestions", personalizationPayload());
+  state.personalization.analysisMeta = data.analysis || null;
   return (data.suggestions || []).map((item, index) => ({
     id: item.id || `suggestion-${index}`,
     category: item.category || "Detected patterns",
     target: normalizeSuggestionTarget(item.target),
     text: item.text || "",
-    evidence: item.evidence || "",
+    evidence: typeof item.evidence === "string" ? item.evidence : "",
+    evidenceItems: Array.isArray(item.evidence) ? item.evidence : Array.isArray(item.evidenceItems) ? item.evidenceItems : [],
     confidence: item.confidence || "",
     evidenceCount: Number(item.evidenceCount || 0),
     editing: false,
@@ -1457,13 +1465,33 @@ function normalizeSuggestionTarget(value) {
 
 function renderPersonalizationSuggestions() {
   els.personalizationSuggestions.innerHTML = "";
+  const meta = state.personalization.analysisMeta || {};
+  if (meta.summary || meta.analyzedThreadCount) {
+    const summary = document.createElement("div");
+    summary.className = "analysis-result-card";
+    const analyzed = Number(meta.analyzedThreadCount || 0);
+    const matched = Number(meta.matchedThreadCount || analyzed);
+    const cap = Number(meta.maxThreads || analyzed);
+    const countLine = analyzed
+      ? `Codex analyzed ${formatNumber(analyzed)}${matched > analyzed ? ` of ${formatNumber(matched)}` : ""} matching threads${matched > cap ? `, capped at ${formatNumber(cap)} most recent` : ""}.`
+      : "Codex completed the analysis.";
+    summary.innerHTML = `
+      <strong>Codex analysis complete</strong>
+      <span>${escapeHtml(countLine)}</span>
+      ${meta.summary ? `<span>${escapeHtml(meta.summary)}</span>` : ""}
+    `;
+    els.personalizationSuggestions.appendChild(summary);
+  }
   if (!state.personalization.suggestions.length) {
-    els.personalizationSuggestions.innerHTML = `
+    els.personalizationSuggestions.insertAdjacentHTML(
+      "beforeend",
+      `
       <div class="wizard-empty-state">
         <strong>No reusable patterns found</strong>
-        <span>The selected threads did not produce high-confidence AGENTS.md suggestions. Try a broader scope or include archived threads.</span>
+        <span>Codex did not find high-confidence AGENTS.md suggestions in the selected threads. Try a broader scope or include archived threads.</span>
       </div>
-    `;
+    `,
+    );
     els.personalizationNext.disabled = true;
     return;
   }
@@ -1488,6 +1516,7 @@ function createSuggestionReviewCard(suggestion) {
   card.dataset.suggestionId = suggestion.id;
   const targetLabel = suggestionTargetLabel(suggestion.target);
   const evidenceMeta = suggestionEvidenceMeta(suggestion);
+  const hasEvidence = Boolean(suggestion.evidence || suggestion.evidenceItems?.length);
   card.innerHTML = `
     <div class="suggestion-card-main">
       <label class="suggestion-check">
@@ -1508,12 +1537,12 @@ function createSuggestionReviewCard(suggestion) {
           <option value="ignore" ${suggestion.target === "ignore" ? "selected" : ""}>Ignore</option>
         </select>
         <button type="button" data-suggestion-edit="${escapeAttr(suggestion.id)}">${suggestion.editing ? "Done" : "Edit"}</button>
-        ${suggestion.evidence ? `<button type="button" data-suggestion-evidence="${escapeAttr(suggestion.id)}">${suggestion.showingEvidence ? "Hide evidence" : "View evidence"}</button>` : ""}
+        ${hasEvidence ? `<button type="button" data-suggestion-evidence="${escapeAttr(suggestion.id)}">${suggestion.showingEvidence ? "Hide evidence" : "View evidence"}</button>` : ""}
       </div>
     </div>
     ${
-      suggestion.showingEvidence && suggestion.evidence
-        ? `<div class="suggestion-evidence"><strong>Evidence</strong><span>${escapeHtml(suggestion.evidence)}</span></div>`
+      suggestion.showingEvidence && hasEvidence
+        ? suggestionEvidenceHtml(suggestion)
         : ""
     }
   `;
@@ -1560,6 +1589,35 @@ function createSuggestionReviewCard(suggestion) {
     renderPersonalizationSuggestions();
   });
   return card;
+}
+
+function suggestionEvidenceHtml(suggestion) {
+  const items = Array.isArray(suggestion.evidenceItems) ? suggestion.evidenceItems : [];
+  if (items.length) {
+    const rows = items
+      .slice(0, 6)
+      .map((item) => {
+        const title = item.threadTitle || item.title || shortId(item.threadId || "") || "Thread";
+        const meta = [formatEvidenceDate(item.date), item.threadId ? shortId(item.threadId) : ""].filter(Boolean).join(" · ");
+        return `
+          <li>
+            <strong>${escapeHtml(title)}</strong>
+            ${meta ? `<em>${escapeHtml(meta)}</em>` : ""}
+            <span>${escapeHtml(item.excerpt || "")}</span>
+          </li>
+        `;
+      })
+      .join("");
+    return `<div class="suggestion-evidence"><strong>Evidence</strong><ul>${rows}</ul></div>`;
+  }
+  return `<div class="suggestion-evidence"><strong>Evidence</strong><span>${escapeHtml(suggestion.evidence || "")}</span></div>`;
+}
+
+function formatEvidenceDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return formatDate(value);
 }
 
 function suggestionEvidenceMeta(suggestion) {
@@ -1681,13 +1739,18 @@ function renderAgentsPreview(previews) {
   els.agentsDiffPreview.innerHTML = previews
     .map((preview) => {
       const stateLabel = preview.exists ? "This file will be updated" : "This file will be created";
+      const diff = String(preview.diff || "").trim();
       return `
         <section class="agents-diff-card">
           <div>
             <strong>${escapeHtml(shortPath(preview.targetPath || "") || preview.targetPath || "AGENTS.md")}</strong>
             <span>${escapeHtml(stateLabel)}</span>
           </div>
-          <pre class="diff-preview">${escapeHtml(preview.diff || "(no changes)")}</pre>
+          ${
+            diff
+              ? `<div class="diff-inline agents-diff-inline" aria-label="AGENTS.md diff">${diffSectionsHtml(diff)}</div>`
+              : `<div class="tool-empty diff-unavailable">(no changes)</div>`
+          }
         </section>
       `;
     })

@@ -546,17 +546,17 @@
             <section class="wizard-step" data-personalization-step="2" hidden>
               <div class="wizard-section-heading">
                 <h3>Analyze threads</h3>
-                <p>Codex will look for repeated instructions, workflow habits, verification commands, and project conventions.</p>
+                <p>Codex will run a temporary analysis task, inspect the selected thread rollout paths, and return structured AGENTS.md candidates. No thread is created.</p>
               </div>
               <div class="analysis-summary-card">
                 <strong>Sources</strong>
                 <span id="personalizationAnalyzeSummary">0 threads</span>
               </div>
               <div class="analysis-plan" id="personalizationAnalysisPlan">
-                <span>Read thread titles and summaries</span>
-                <span>Detect repeated user instructions</span>
+                <span>Prepare a manifest with selected thread rollout paths</span>
+                <span>Run Codex in ephemeral read-only mode</span>
                 <span>Classify global preferences vs project conventions</span>
-                <span>Generate candidate AGENTS.md entries</span>
+                <span>Generate structured candidate AGENTS.md entries with evidence</span>
               </div>
               <div id="personalizationAnalysisState" class="analysis-state" hidden></div>
             </section>

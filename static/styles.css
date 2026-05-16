@@ -2588,7 +2588,8 @@ tbody tr:last-child td {
 }
 
 .analysis-summary-card,
-.analysis-state {
+.analysis-state,
+.analysis-result-card {
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
   display: grid;
@@ -2597,9 +2598,14 @@ tbody tr:last-child td {
 }
 
 .analysis-summary-card span,
-.analysis-state span {
+.analysis-state span,
+.analysis-result-card span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.analysis-result-card {
+  background: var(--surface-soft);
 }
 
 .analysis-plan {
@@ -2713,6 +2719,29 @@ tbody tr:last-child td {
   padding: 9px;
 }
 
+.suggestion-evidence ul {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.suggestion-evidence li {
+  display: grid;
+  gap: 2px;
+}
+
+.suggestion-evidence li strong {
+  font-size: 12px;
+}
+
+.suggestion-evidence li em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+}
+
 .thread-picker {
   display: grid;
   gap: 8px;
@@ -2803,13 +2832,22 @@ tbody tr:last-child td {
 }
 
 .agents-diff-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
   display: grid;
   gap: 7px;
+  overflow: hidden;
+  padding: 10px;
 }
 
 .agents-diff-card > div {
   display: grid;
   gap: 2px;
+}
+
+.agents-diff-inline {
+  max-height: 460px;
+  overflow: auto;
 }
 
 .diff-preview {
