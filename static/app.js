@@ -4257,21 +4257,26 @@ function buildContextSummary() {
   const rawCategories = hasCurrentContextBreakdown() ? state.codex.contextBreakdown || [] : [];
   const rawContributors = hasCurrentContextBreakdown() ? state.codex.contextContributors || [] : [];
   const normalizedCategories = rawCategories.map((item, index) => normalizeContextBreakdownItem(item, index)).filter(Boolean);
-  const categoryTokenTotal = normalizedCategories.reduce((sum, item) => sum + item.tokens, 0);
-  const estimatedTokens = firstNumber(usage.used, categoryTokenTotal || null);
+  const breakdownTotalTokens = normalizedCategories.reduce((sum, item) => sum + item.tokens, 0);
+  const liveContextTokens = firstNumber(usage.used);
   const maxContextTokens = firstNumber(usage.windowTokens);
-  const totalForPercentage = estimatedTokens || categoryTokenTotal || 0;
-  const categories = aggregateContextCategories(normalizedCategories, totalForPercentage);
+  const attributionBaseTokens = contextAttributionBaseTokens(liveContextTokens, maxContextTokens, breakdownTotalTokens);
+  const attributionScale = contextAttributionScale(attributionBaseTokens, breakdownTotalTokens);
+  const estimatedTokens = liveContextTokens || attributionBaseTokens || breakdownTotalTokens || null;
+  const categories = aggregateContextCategories(normalizedCategories, breakdownTotalTokens, attributionScale);
   const contributors = rawContributors
     .map((item, index) => normalizeContextBreakdownItem(item, index, "contributor"))
     .filter(Boolean)
-    .sort((left, right) => right.tokens - left.tokens);
+    .map((item) => scaleContextTokens(item, attributionScale))
+    .sort((left, right) => right.rawTokens - left.rawTokens);
   const usagePercentage =
     estimatedTokens !== null && maxContextTokens !== null && maxContextTokens > 0 ? clamp((estimatedTokens / maxContextTokens) * 100, 0, 100) : null;
   const hasDetailedAttribution = contributors.some((item) => hasUsefulContextAttribution(item));
   return {
     estimatedTokens,
     maxContextTokens,
+    breakdownTotalTokens,
+    attributionBaseTokens,
     usagePercentage,
     pressure: contextPressureLevel(usagePercentage, estimatedTokens, maxContextTokens),
     estimated: Boolean(state.codex.contextBreakdownEstimated || usage.derived),
@@ -4300,6 +4305,7 @@ function normalizeContextBreakdownItem(item, index, kind = "category") {
     rawLabel,
     category,
     tokens,
+    rawTokens: tokens,
     percentage,
     source,
     tool,
@@ -4316,21 +4322,42 @@ function normalizeContextCategory(category) {
   return value || "other";
 }
 
-function aggregateContextCategories(items, totalTokens) {
+function aggregateContextCategories(items, totalTokens, scale = 1) {
   const buckets = new Map();
   for (const item of items) {
     const group = contextCategoryGroup(item.category);
-    const existing = buckets.get(group.id) || { ...group, category: group.id, tokens: 0, rawItems: [] };
-    existing.tokens += item.tokens;
+    const existing = buckets.get(group.id) || { ...group, category: group.id, tokens: 0, rawTokens: 0, rawItems: [] };
+    existing.rawTokens += item.rawTokens || item.tokens;
     existing.rawItems.push(item);
     buckets.set(group.id, existing);
   }
   return [...buckets.values()]
     .map((item) => ({
       ...item,
-      percentage: totalTokens ? clamp((item.tokens / totalTokens) * 100, 0, 100) : 0,
+      tokens: Math.round(item.rawTokens * scale),
+      percentage: totalTokens ? clamp((item.rawTokens / totalTokens) * 100, 0, 100) : 0,
     }))
-    .sort((left, right) => right.tokens - left.tokens);
+    .sort((left, right) => right.rawTokens - left.rawTokens);
+}
+
+function contextAttributionBaseTokens(liveContextTokens, maxContextTokens, breakdownTotalTokens) {
+  if (liveContextTokens !== null && liveContextTokens > 0) return liveContextTokens;
+  if (maxContextTokens !== null && maxContextTokens > 0 && breakdownTotalTokens > maxContextTokens) return maxContextTokens;
+  return breakdownTotalTokens || null;
+}
+
+function contextAttributionScale(baseTokens, breakdownTotalTokens) {
+  if (!baseTokens || !breakdownTotalTokens) return 1;
+  return Math.min(1, baseTokens / breakdownTotalTokens);
+}
+
+function scaleContextTokens(item, scale) {
+  const rawTokens = item.rawTokens || item.tokens || 0;
+  return {
+    ...item,
+    rawTokens,
+    tokens: Math.max(1, Math.round(rawTokens * scale)),
+  };
 }
 
 function contextCategoryGroup(category) {
@@ -4438,7 +4465,7 @@ function renderContextContributorGroups(summary) {
       <div class="context-contributor-head">
         <div>
           <strong>${escapeHtml(category.label)}</strong>
-          <span>${escapeHtml(formatCompactNumber(category.tokens))} tokens · ${escapeHtml(formatPercent(category.percentage))} of context</span>
+          <span>${escapeHtml(formatCompactNumber(category.tokens))} tokens · ${escapeHtml(formatPercent(category.percentage))} of breakdown</span>
         </div>
       </div>
       <p>${escapeHtml(contextGroupDescription(category, items))}</p>
