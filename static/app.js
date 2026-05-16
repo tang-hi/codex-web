@@ -74,6 +74,9 @@ const state = {
     planDeltas: {},
     approvalNodes: {},
     threadRuntime: {},
+    compactions: {},
+    pendingTurnThreadId: "",
+    turnHasVisibleOutput: false,
     latestDiff: "",
     changedFiles: [],
     runningCommand: "",
@@ -109,6 +112,7 @@ const els = {
   chatLimitMeta: document.getElementById("chatLimitMeta"),
   chatLimitBar: document.getElementById("chatLimitBar"),
   messageJumpNav: document.getElementById("messageJumpNav"),
+  chatWorkingIndicator: document.getElementById("chatWorkingIndicator"),
   jumpPrevSpeech: document.getElementById("jumpPrevSpeech"),
   jumpNextSpeech: document.getElementById("jumpNextSpeech"),
   jumpLatest: document.getElementById("jumpLatest"),
@@ -2012,6 +2016,8 @@ function handleCodexEvent(event) {
   }
   if (method === "turn/started") {
     state.codex.turnId = params.turn && params.turn.id;
+    clearPendingTurn(state.codex.threadId, { keepActivity: true });
+    state.codex.turnHasVisibleOutput = Boolean(state.codex.threadRuntime[state.codex.threadId]?.visibleOutput);
     syncActionAvailability();
     setChatActivity("Working");
     scheduleThreadContextBreakdownRefresh(600);
@@ -2025,6 +2031,8 @@ function handleCodexEvent(event) {
     state.codex.turnId = null;
     state.codex.threadStatus = "";
     state.codex.threadStatusMessage = "";
+    clearPendingTurn(state.codex.threadId);
+    state.codex.turnHasVisibleOutput = false;
     syncActionAvailability();
     setChatActivity("");
     scheduleThreadContextBreakdownRefresh(1200);
@@ -2077,11 +2085,16 @@ function handleCodexEvent(event) {
   }
   if (method === "item/started" || method === "item/completed") {
     const item = params.item || {};
+    if (item.type === "contextCompaction") {
+      if (method === "item/started") markThreadCompactionRunning(notificationThreadId(params) || state.codex.threadId);
+      else completeThreadCompaction(notificationThreadId(params) || state.codex.threadId);
+      return;
+    }
     upsertCodexItem(item, method.endsWith("started") ? "started" : "completed");
     return;
   }
   if (method === "thread/compacted") {
-    appendCompactInfo("Context compacted");
+    completeThreadCompaction(notificationThreadId(params) || state.codex.threadId);
     return;
   }
   if (method === "model/rerouted") {
@@ -2132,12 +2145,14 @@ function rememberThreadRuntime(method, params) {
   if (turnId && method !== "turn/completed" && existing.completedTurnId !== turnId) {
     next.turnId = turnId;
     next.active = true;
+    if (existing.turnId !== turnId) next.visibleOutput = false;
   }
 
   if (method === "turn/completed") {
     if (!turnId || !existing.turnId || existing.turnId === turnId) {
       next.turnId = "";
       next.active = false;
+      next.visibleOutput = false;
     }
     if (turnId) next.completedTurnId = turnId;
   }
@@ -2153,6 +2168,8 @@ function markVisibleThreadWorking(method, params) {
   if (state.codex.threadRuntime[threadId]?.completedTurnId === turnId) return;
   if (state.codex.turnId !== turnId) {
     state.codex.turnId = turnId;
+    state.codex.turnHasVisibleOutput = false;
+    clearPendingTurn(threadId, { keepActivity: true });
     syncActionAvailability();
   }
   if (!state.codex.activity) {
@@ -2192,7 +2209,10 @@ async function resumeCodexThreadById() {
   closeResumePopover();
   setChatActivity("Loading history");
   await loadInitialThreadHistory(id);
-  setChatActivity("Ready");
+  syncVisibleCompactionActivity(id);
+  renderCompactionCard(id);
+  if (isCompactionPending(currentThreadCompaction())) renderChatStatus();
+  else setChatActivity("Ready");
 }
 
 function addImageAttachments(files) {
@@ -2315,9 +2335,11 @@ async function sendCodexMessage(event) {
     if (state.codex.turnId) {
       await postJson("/api/codex/steer", { ...body, turnId: state.codex.turnId });
     } else {
+      beginPendingTurn(state.codex.threadId);
       await postJson("/api/codex/turn", body);
     }
   } catch (error) {
+    clearPendingTurn(state.codex.threadId);
     appendChatLine("error", error.message);
   }
 }
@@ -2344,6 +2366,10 @@ function activeThreadForAction(actionLabel) {
     appendChatLine("warning", `Wait for the current turn to finish before using ${actionLabel}.`);
     return "";
   }
+  if (isCompactionPending(currentThreadCompaction())) {
+    appendChatLine("warning", "Wait for context compaction to finish before starting another thread action.");
+    return "";
+  }
   return state.codex.threadId;
 }
 
@@ -2366,10 +2392,16 @@ async function runThreadAction(actionLabel, callback) {
 }
 
 async function compactActiveThread() {
-  await runThreadAction("Compacting context", async (threadId) => {
-    appendCompactInfo("Compaction requested");
+  const threadId = activeThreadForAction("Compact");
+  if (!threadId) return;
+  closeThreadActionMenu();
+  beginThreadCompaction(threadId);
+  try {
     await postJson("/api/codex/compact", { threadId });
-  });
+    markThreadCompactionAccepted(threadId);
+  } catch (error) {
+    failThreadCompaction(threadId, error.message);
+  }
 }
 
 async function reviewActiveThread() {
@@ -2500,6 +2532,7 @@ function renderServerRequest(request) {
   rememberThreadRuntime(request.method || "serverRequest", params);
   if (!notificationTargetsVisibleThread(request.method || "serverRequest", params)) return;
   markVisibleThreadWorking(request.method || "serverRequest", params);
+  markVisibleTurnOutput(notificationThreadId(params) || state.codex.threadId);
   const requestId = request.id || params.requestId || `approval-${Object.keys(state.codex.approvalNodes).length}`;
   const box = document.createElement("article");
   box.className = "transcript-event approval";
@@ -2552,6 +2585,7 @@ function resolveApprovalCard(requestId, decision, node) {
 }
 
 function appendAgentDelta(itemId, delta) {
+  markVisibleTurnOutput();
   const entry = ensureAgentMessage(itemId);
   entry.dataset.raw = (entry.dataset.raw || "") + delta;
   const body = entry.querySelector(".transcript-body");
@@ -2560,6 +2594,7 @@ function appendAgentDelta(itemId, delta) {
 }
 
 function setAgentMessage(itemId, text) {
+  markVisibleTurnOutput();
   const entry = ensureAgentMessage(itemId);
   entry.dataset.raw = text || "";
   const body = entry.querySelector(".transcript-body");
@@ -2730,6 +2765,7 @@ function appendChatLine(kind, text, attachments = []) {
   if (kind === "user") {
     entry = createUserMessageNode(text, attachments);
   } else {
+    markVisibleTurnOutput();
     entry = document.createElement("article");
     entry.className = `transcript-event ${safeId(kind)}`;
     const title = document.createElement("div");
@@ -2762,7 +2798,7 @@ function upsertCodexItem(item, lifecycle) {
     return;
   }
   if (item.type === "contextCompaction") {
-    appendCompactInfo("Context compacted");
+    completeThreadCompaction(state.codex.threadId);
     return;
   }
   if (item.type === "enteredReviewMode" || item.type === "exitedReviewMode") {
@@ -2770,6 +2806,7 @@ function upsertCodexItem(item, lifecycle) {
     return;
   }
   if (!shouldRenderToolItem(item, lifecycle)) return;
+  markVisibleTurnOutput();
 
   const id = item.id || `${item.type}-${Object.keys(state.codex.itemNodes).length}`;
   let card = state.codex.itemNodes[id];
@@ -2812,6 +2849,7 @@ function upsertReasoningItem(item, lifecycle) {
   if (!visible) {
     return;
   }
+  markVisibleTurnOutput();
   let node = state.codex.reasoningNodes[id];
   if (!node) {
     node = document.createElement("article");
@@ -2836,6 +2874,7 @@ function appendCommandOutput(itemId, delta) {
   state.codex.commandOutputs[id] = (state.codex.commandOutputs[id] || "") + delta;
   const card = state.codex.itemNodes[id];
   if (card) {
+    markVisibleTurnOutput();
     const command = commandFromCard(card);
     renderCommandOutput(card, state.codex.commandOutputs[id], command);
     scrollChatToBottom();
@@ -2880,6 +2919,7 @@ function renderFileChangePatch(params) {
 function renderDiffCard(diff, title = "Diff") {
   const text = String(diff || "").trim();
   if (!text) return;
+  markVisibleTurnOutput();
   setChangedFiles(parseDiffFiles(text));
   const diffHtml = diffSectionsHtml(text);
 
@@ -2906,6 +2946,7 @@ function renderDiffCard(diff, title = "Diff") {
 }
 
 function renderPlan(plan, explanation) {
+  markVisibleTurnOutput();
   let card = document.getElementById("active-plan-card");
   if (!card) {
     card = document.createElement("article");
@@ -2931,6 +2972,7 @@ function appendPlanDelta(itemId, delta) {
 }
 
 function setPlanItem(itemId, text, streaming = false) {
+  markVisibleTurnOutput();
   const id = itemId || "plan";
   let card = state.codex.itemNodes[id];
   if (!card) {
@@ -3391,6 +3433,195 @@ function createCompactInfoNode(text) {
 function appendCompactInfo(text) {
   const entry = createCompactInfoNode(text);
   els.chatLog.appendChild(entry);
+  scrollChatToBottom();
+}
+
+function beginThreadCompaction(threadId) {
+  const next = {
+    ...(state.codex.compactions[threadId] || {}),
+    threadId,
+    status: "starting",
+    requestedAt: Date.now(),
+    message: "Preparing a shorter context for this thread.",
+  };
+  state.codex.compactions[threadId] = next;
+  scheduleCompactionWaiting(threadId);
+  if (threadId === state.codex.threadId) {
+    setChatActivity("Compacting context");
+    renderCompactionCard(threadId);
+    renderChatStatus();
+  }
+}
+
+function markThreadCompactionAccepted(threadId) {
+  const stateForThread = state.codex.compactions[threadId];
+  if (!stateForThread || isCompactionFinished(stateForThread)) return;
+  state.codex.compactions[threadId] = {
+    ...stateForThread,
+    status: stateForThread.status === "starting" ? "running" : stateForThread.status,
+    acceptedAt: Date.now(),
+    message: "Codex accepted the request. Waiting for compacted context.",
+  };
+  if (threadId === state.codex.threadId) {
+    setChatActivity(compactionActivityLabel(state.codex.compactions[threadId]));
+    renderCompactionCard(threadId);
+  }
+}
+
+function markThreadCompactionRunning(threadId) {
+  if (!threadId) return;
+  const existing = state.codex.compactions[threadId] || { threadId, requestedAt: Date.now() };
+  if (isCompactionFinished(existing)) return;
+  state.codex.compactions[threadId] = {
+    ...existing,
+    status: "running",
+    message: "Codex is summarizing older turns for this thread.",
+  };
+  scheduleCompactionWaiting(threadId);
+  if (threadId === state.codex.threadId) {
+    setChatActivity("Compacting context");
+    renderCompactionCard(threadId);
+  }
+}
+
+function completeThreadCompaction(threadId) {
+  if (!threadId) return;
+  const existing = state.codex.compactions[threadId] || { threadId, requestedAt: Date.now() };
+  if (existing.status === "completed") {
+    if (threadId === state.codex.threadId) renderCompactionCard(threadId);
+    return;
+  }
+  clearCompactionWaitingTimer(threadId);
+  state.codex.compactions[threadId] = {
+    ...existing,
+    status: "completed",
+    completedAt: Date.now(),
+    message: "Older turns were summarized for this thread.",
+  };
+  if (threadId === state.codex.threadId) {
+    if (isCompactionActivity(state.codex.activity)) setChatActivity("");
+    renderCompactionCard(threadId);
+    scheduleThreadContextBreakdownRefresh(500);
+  }
+}
+
+function failThreadCompaction(threadId, message) {
+  const existing = state.codex.compactions[threadId] || { threadId, requestedAt: Date.now() };
+  if (existing.status === "completed") return;
+  clearCompactionWaitingTimer(threadId);
+  state.codex.compactions[threadId] = {
+    ...existing,
+    status: "failed",
+    failedAt: Date.now(),
+    message: message || "Codex could not start context compaction.",
+  };
+  if (threadId === state.codex.threadId) {
+    if (isCompactionActivity(state.codex.activity)) setChatActivity("");
+    renderCompactionCard(threadId);
+    renderChatStatus();
+  }
+}
+
+function markThreadCompactionWaiting(threadId) {
+  const existing = state.codex.compactions[threadId];
+  if (!existing || isCompactionFinished(existing)) return;
+  state.codex.compactions[threadId] = {
+    ...existing,
+    status: "waiting",
+    message: "Waiting for Codex to finish context compaction.",
+  };
+  if (threadId === state.codex.threadId) {
+    setChatActivity("Still compacting");
+    renderCompactionCard(threadId);
+  }
+}
+
+function scheduleCompactionWaiting(threadId) {
+  const existing = state.codex.compactions[threadId];
+  if (!existing) return;
+  clearCompactionWaitingTimer(threadId);
+  existing.waitTimer = window.setTimeout(() => markThreadCompactionWaiting(threadId), 90000);
+}
+
+function clearCompactionWaitingTimer(threadId) {
+  const existing = state.codex.compactions[threadId];
+  if (existing?.waitTimer) {
+    window.clearTimeout(existing.waitTimer);
+    existing.waitTimer = null;
+  }
+}
+
+function currentThreadCompaction() {
+  return state.codex.threadId ? state.codex.compactions[state.codex.threadId] || null : null;
+}
+
+function isCompactionPending(compaction) {
+  return Boolean(compaction && ["starting", "running", "waiting"].includes(compaction.status));
+}
+
+function isCompactionFinished(compaction) {
+  return Boolean(compaction && ["completed", "failed"].includes(compaction.status));
+}
+
+function isCompactionActivity(value) {
+  return value === "Compacting context" || value === "Still compacting";
+}
+
+function compactionActivityLabel(compaction) {
+  return compaction?.status === "waiting" ? "Still compacting" : "Compacting context";
+}
+
+function syncVisibleCompactionActivity(threadId) {
+  const compaction = state.codex.compactions[threadId];
+  if (isCompactionPending(compaction)) {
+    state.codex.activity = compactionActivityLabel(compaction);
+  } else if (isCompactionActivity(state.codex.activity)) {
+    state.codex.activity = "";
+  }
+}
+
+function renderCompactionCard(threadId = state.codex.threadId) {
+  if (!threadId || threadId !== state.codex.threadId) return;
+  const compaction = state.codex.compactions[threadId];
+  if (!compaction) return;
+
+  const status = compaction.status || "running";
+  const pending = isCompactionPending(compaction);
+  const failed = status === "failed";
+  const completed = status === "completed";
+  const title = failed ? "Compaction failed" : completed ? "Context compacted" : status === "waiting" ? "Still compacting" : "Compacting context";
+  const meta = failed ? "failed" : completed ? "completed" : status === "starting" ? "requested" : "running";
+  const message =
+    compaction.message ||
+    (completed ? "Older turns were summarized for this thread." : "Preparing a shorter context for this thread.");
+  const hint = pending
+    ? "You can keep this thread open while Codex summarizes older turns."
+    : completed
+      ? "The next turns will use the compacted context."
+      : "No context was changed.";
+
+  let card = document.getElementById("active-compaction-card");
+  if (!card) {
+    card = document.createElement("article");
+    card.id = "active-compaction-card";
+    els.chatLog.appendChild(card);
+  }
+  card.className = `tool-card compaction-card ${failed ? "failed" : completed ? "completed" : "running"}`;
+  card.dataset.threadId = threadId;
+  card.innerHTML = `
+    <div class="tool-title"><span>${escapeHtml(title)}</span><em>${escapeHtml(meta)}</em></div>
+    <div class="compaction-body">
+      ${
+        pending
+          ? '<span class="compaction-spinner" aria-hidden="true"></span>'
+          : `<span class="compaction-state ${failed ? "failed" : "completed"}">${escapeHtml(failed ? "!" : "Done")}</span>`
+      }
+      <div>
+        <p>${escapeHtml(message)}</p>
+        <small>${escapeHtml(hint)}</small>
+      </div>
+    </div>
+  `;
   scrollChatToBottom();
 }
 
@@ -4153,9 +4384,13 @@ function imagesFromContent(value) {
 
 function setActiveThread(id, options = {}) {
   const previousThreadId = state.codex.threadId;
+  if (previousThreadId && state.codex.threadRuntime[previousThreadId]) {
+    state.codex.threadRuntime[previousThreadId].visibleOutput = state.codex.turnHasVisibleOutput;
+  }
   state.codex.threadId = id;
   if (previousThreadId !== id) {
     applyThreadRuntimeToVisibleThread(id);
+    syncVisibleCompactionActivity(id);
   }
   if (state.codex.contextBreakdownThreadId !== id) {
     state.codex.contextBreakdown = null;
@@ -4181,6 +4416,7 @@ function setActiveThread(id, options = {}) {
   renderChatThreadLine();
   renderSidebarThreads();
   renderActivitySidebar();
+  renderCompactionCard(id);
   loadThreadContextBreakdown(id);
 }
 
@@ -4190,6 +4426,7 @@ function applyThreadRuntimeToVisibleThread(threadId) {
   state.codex.turnId = running ? runtime.turnId : null;
   state.codex.threadStatus = runtime.threadStatus || (runtime.active ? "active" : "");
   state.codex.threadStatusMessage = runtime.threadStatusMessage || "";
+  state.codex.turnHasVisibleOutput = Boolean(runtime.visibleOutput);
   if (runtime.active && !state.codex.activity) {
     state.codex.activity = "Working";
   } else if (!runtime.active && state.codex.activity === "Working") {
@@ -4278,6 +4515,8 @@ function resetChatTranscript() {
   }
   state.codex.contextBreakdownEstimated = false;
   state.codex.contextContributors = [];
+  state.codex.pendingTurnThreadId = "";
+  state.codex.turnHasVisibleOutput = false;
   resetHistoryPaging();
   syncActionAvailability();
   renderChatThreadLine();
@@ -4342,6 +4581,45 @@ function setChatActivity(text) {
   renderChatStatus();
 }
 
+function beginPendingTurn(threadId) {
+  if (!threadId) return;
+  state.codex.pendingTurnThreadId = threadId;
+  if (threadId === state.codex.threadId) {
+    state.codex.turnHasVisibleOutput = false;
+    setChatActivity("Working");
+  } else {
+    renderChatStatus();
+  }
+}
+
+function clearPendingTurn(threadId, options = {}) {
+  if (state.codex.pendingTurnThreadId && (!threadId || state.codex.pendingTurnThreadId === threadId)) {
+    state.codex.pendingTurnThreadId = "";
+  }
+  if (!options.keepActivity && state.codex.activity === "Working" && !state.codex.turnId && !state.codex.threadStatus) {
+    setChatActivity("");
+    return;
+  }
+  renderWorkingIndicator();
+}
+
+function hasPendingTurnForVisibleThread() {
+  return Boolean(state.codex.threadId && state.codex.pendingTurnThreadId === state.codex.threadId);
+}
+
+function markVisibleTurnOutput(threadId = state.codex.threadId) {
+  if (!threadId || threadId !== state.codex.threadId) return;
+  const runtime = state.codex.threadRuntime[threadId] || {};
+  state.codex.threadRuntime[threadId] = {
+    ...runtime,
+    visibleOutput: true,
+    updatedAt: Date.now(),
+  };
+  if (state.codex.turnHasVisibleOutput) return;
+  state.codex.turnHasVisibleOutput = true;
+  renderWorkingIndicator();
+}
+
 function renderChatStatus() {
   renderSessionStatus();
   renderContextStatus();
@@ -4349,12 +4627,17 @@ function renderChatStatus() {
   renderPrimarySummary();
   syncActionAvailability();
   renderActivitySidebar();
+  renderWorkingIndicator();
 }
 
 function currentSessionStatus() {
   const bridge = state.codex.bridge;
   if (bridge.lastError) return "Error";
-  return state.codex.turnId || state.codex.threadStatus === "active" || state.codex.actionInFlight
+  return state.codex.turnId ||
+    state.codex.threadStatus === "active" ||
+    hasPendingTurnForVisibleThread() ||
+    isCompactionPending(currentThreadCompaction()) ||
+    state.codex.actionInFlight
     ? "Working"
     : bridge.initialized
       ? "Ready"
@@ -4364,12 +4647,14 @@ function currentSessionStatus() {
 }
 
 function syncActionAvailability() {
-  const running = Boolean(state.codex.turnId || state.codex.threadStatus === "active");
+  const compacting = isCompactionPending(currentThreadCompaction());
+  const running = Boolean(state.codex.turnId || state.codex.threadStatus === "active" || compacting || hasPendingTurnForVisibleThread());
   const busy = Boolean(state.codex.actionInFlight);
   const hasThread = Boolean(state.codex.threadId);
   const threadActionDisabled = !hasThread || running || busy;
   els.interruptCodexTurn.hidden = !state.codex.turnId;
   els.interruptCodexTurn.disabled = !state.codex.turnId;
+  if (els.compactThread) els.compactThread.textContent = compacting ? "Compacting..." : "Compact";
   for (const button of [els.compactThread, els.reviewThread, els.forkThread, els.moreThreadActions]) {
     if (button) button.disabled = threadActionDisabled;
   }
@@ -4427,6 +4712,58 @@ function renderPrimarySummary() {
   els.chatPrimaryCwd.textContent = shortPath(threadProjectPath(state.codex.threadId) || els.chatCwd.value) || "No directory";
   els.chatPrimaryCwd.title = threadProjectPath(state.codex.threadId) || els.chatCwd.value || "";
   els.codexStatus.textContent = `${status} · ${compactContextLabel()}`;
+}
+
+function renderWorkingIndicator() {
+  const indicator = els.chatWorkingIndicator;
+  if (!indicator) return;
+  const shell = indicator.closest(".chat-log-shell");
+  const show = Boolean(
+    state.codex.threadId &&
+      currentSessionStatus() === "Working" &&
+      !isCompactionPending(currentThreadCompaction()) &&
+      !state.codex.turnHasVisibleOutput,
+  );
+  indicator.hidden = !show;
+  if (shell) shell.classList.toggle("working-indicator-visible", show);
+  if (!show) return;
+
+  const copy = workingIndicatorCopy();
+  const title = indicator.querySelector("strong");
+  const detail = indicator.querySelector("span:last-child");
+  if (title) title.textContent = copy.title;
+  if (detail) detail.textContent = copy.detail;
+}
+
+function workingIndicatorCopy() {
+  if (hasPendingTurnForVisibleThread() && !state.codex.turnId) {
+    return {
+      title: "Sending message to Codex",
+      detail: "Waiting for this turn to start.",
+    };
+  }
+  if (state.codex.actionInFlight) {
+    return {
+      title: state.codex.actionInFlight,
+      detail: "Waiting for Codex to report progress.",
+    };
+  }
+  if (state.codex.threadStatusMessage) {
+    return {
+      title: "Codex is working",
+      detail: state.codex.threadStatusMessage,
+    };
+  }
+  if (state.codex.activity && state.codex.activity !== "Working") {
+    return {
+      title: state.codex.activity,
+      detail: "Waiting for the next visible update.",
+    };
+  }
+  return {
+    title: "Codex is working",
+    detail: "Waiting for the first visible update in this turn.",
+  };
 }
 
 function compactContextLabel() {

@@ -76,6 +76,13 @@
           </div>
           <div class="chat-log-shell">
             <div class="chat-log" id="chatLog"></div>
+            <div id="chatWorkingIndicator" class="chat-working-indicator" role="status" aria-live="polite" hidden>
+              <span class="chat-working-dot" aria-hidden="true"></span>
+              <div>
+                <strong>Codex is working</strong>
+                <span>Waiting for the next update.</span>
+              </div>
+            </div>
             <div id="messageJumpNav" class="message-jump-nav" aria-label="Message navigation" hidden>
               <button id="jumpPrevSpeech" type="button" title="Previous user or Codex message" aria-label="Previous user or Codex message">↑</button>
               <button id="jumpNextSpeech" type="button" title="Next user or Codex message" aria-label="Next user or Codex message">↓</button>
