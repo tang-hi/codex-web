@@ -2763,7 +2763,7 @@ function rememberThreadRuntime(method, params) {
     shouldRefreshThreadList = true;
   }
 
-  if (turnId && method !== "turn/completed" && existing.completedTurnId !== turnId) {
+  if (turnId && isLiveTurnRuntimeEvent(method) && existing.completedTurnId !== turnId) {
     if (existing.turnId !== turnId || !existing.active) shouldRefreshThreadList = true;
     next.turnId = turnId;
     next.active = true;
@@ -2788,8 +2788,15 @@ function rememberThreadRuntime(method, params) {
   }
 }
 
+function isLiveTurnRuntimeEvent(method) {
+  if (method === "thread/tokenUsage/updated") return false;
+  if (method === "account/rateLimits/updated") return false;
+  return method === "turn/started" || method.startsWith("item/") || method.startsWith("turn/");
+}
+
 function markVisibleThreadWorking(method, params) {
   if (method === "turn/completed") return;
+  if (!isLiveTurnRuntimeEvent(method)) return;
   const threadId = notificationThreadId(params);
   const turnId = notificationTurnId(params);
   if (!threadId || threadId !== state.codex.threadId || !turnId) return;
@@ -5399,7 +5406,8 @@ function setCodexStatus(text) {
 }
 
 function setChatActivity(text) {
-  state.codex.activity = text || "";
+  const value = String(text || "").trim();
+  state.codex.activity = value === "Ready" ? "" : value;
   renderChatThreadLine();
   syncSidebarThreadItemStatus(state.codex.threadId);
   renderChatStatus();
