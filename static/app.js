@@ -6,6 +6,12 @@ const THREAD_VISIBILITIES = new Set(["active", "archived", "hidden"]);
 const IMAGE_ATTACHMENT_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const MAX_IMAGE_ATTACHMENTS = 5;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const PERSONALIZATION_STEPS = [
+  { id: 1, label: "Scope" },
+  { id: 2, label: "Analyze" },
+  { id: 3, label: "Review" },
+  { id: 4, label: "Preview & apply" },
+];
 
 const state = {
   items: [],
@@ -32,9 +38,10 @@ const state = {
   composerUploading: false,
   personalization: {
     step: 1,
+    analyzing: false,
+    analysisError: "",
     suggestions: [],
     preview: null,
-    target: "project",
     selectedThreadIds: new Set(),
     threadQuery: "",
   },
@@ -189,10 +196,13 @@ const els = {
   threadManagerSort: document.getElementById("threadManagerSort"),
   threadManagerBulkbar: document.getElementById("threadManagerBulkbar"),
   threadManagerSelectAll: document.getElementById("threadManagerSelectAll"),
+  threadManagerResultSummary: document.getElementById("threadManagerResultSummary"),
   threadManagerSelectedCount: document.getElementById("threadManagerSelectedCount"),
   bulkRestoreThreads: document.getElementById("bulkRestoreThreads"),
   bulkArchiveThreads: document.getElementById("bulkArchiveThreads"),
   bulkHideThreads: document.getElementById("bulkHideThreads"),
+  bulkPinThreads: document.getElementById("bulkPinThreads"),
+  bulkCancelThreads: document.getElementById("bulkCancelThreads"),
   threadManagerResults: document.getElementById("threadManagerResults"),
   renameThreadModal: document.getElementById("renameThreadModal"),
   closeRenameThreadModal: document.getElementById("closeRenameThreadModal"),
@@ -222,14 +232,21 @@ const els = {
   personalizationSteps: document.getElementById("personalizationSteps"),
   personalizationSubtitle: document.getElementById("personalizationSubtitle"),
   personalizationProjectLabel: document.getElementById("personalizationProjectLabel"),
+  scopeCountCurrentProject: document.getElementById("scopeCountCurrentProject"),
+  scopeCountAllProjects: document.getElementById("scopeCountAllProjects"),
+  scopeCountSelectedThreads: document.getElementById("scopeCountSelectedThreads"),
+  scopeCountLast30Days: document.getElementById("scopeCountLast30Days"),
   personalizationIncludeActive: document.getElementById("personalizationIncludeActive"),
   personalizationIncludeArchived: document.getElementById("personalizationIncludeArchived"),
   personalizationIncludeHidden: document.getElementById("personalizationIncludeHidden"),
   personalizationThreadPicker: document.getElementById("personalizationThreadPicker"),
   personalizationThreadSearch: document.getElementById("personalizationThreadSearch"),
   personalizationThreadList: document.getElementById("personalizationThreadList"),
+  personalizationAnalyzeSummary: document.getElementById("personalizationAnalyzeSummary"),
+  personalizationAnalysisState: document.getElementById("personalizationAnalysisState"),
   personalizationSuggestions: document.getElementById("personalizationSuggestions"),
   projectAgentsPath: document.getElementById("projectAgentsPath"),
+  agentsTargetSummary: document.getElementById("agentsTargetSummary"),
   agentsPreviewMeta: document.getElementById("agentsPreviewMeta"),
   agentsDiffPreview: document.getElementById("agentsDiffPreview"),
 };
@@ -771,7 +788,7 @@ function handleLocalThreadAction(action, threadId) {
   if (action === "hide") {
     const previous = threadVisibility(threadId);
     updateThreadMetadata(threadId, { visibility: "hidden" });
-    showToast("Thread hidden.", [
+    showToast("Thread hidden from sidebar.", [
       { label: "Undo", action: "set-visibility", threadId, visibility: previous },
       { label: "View hidden", action: "view-hidden" },
     ]);
@@ -779,6 +796,7 @@ function handleLocalThreadAction(action, threadId) {
   }
   if (action === "restore") {
     updateThreadMetadata(threadId, { visibility: "active" });
+    showToast("Thread restored to sidebar.");
   }
 }
 
@@ -808,7 +826,7 @@ function confirmRenameThread() {
     return;
   }
   updateThreadMetadata(threadId, { displayName: value });
-  appendCompactInfo("Thread display name updated locally");
+  showToast("Thread renamed locally.");
   closeRenameThreadModal();
 }
 
@@ -847,6 +865,12 @@ function handleToastAction(action) {
     updateThreadMetadata(action.threadId, { visibility: action.visibility || "active" });
     return;
   }
+  if (action.action === "bulk-restore-metadata") {
+    for (const entry of action.entries || []) {
+      if (entry?.threadId) updateThreadMetadata(entry.threadId, entry.patch || {});
+    }
+    return;
+  }
   if (action.action === "view-hidden") {
     openThreadManager("hidden");
   }
@@ -868,6 +892,7 @@ function closeThreadManager() {
 function renderThreadManager() {
   if (!els.threadManagerResults) return;
   renderThreadManagerProjectOptions();
+  renderThreadManagerTabs();
   for (const button of document.querySelectorAll("[data-manager-scope]")) {
     const active = button.getAttribute("data-manager-scope") === state.threadManager.scope;
     button.classList.toggle("active", active);
@@ -878,16 +903,50 @@ function renderThreadManager() {
   for (const id of [...state.threadManager.selectedIds]) {
     if (!visibleIds.has(id)) state.threadManager.selectedIds.delete(id);
   }
+  renderThreadManagerResultSummary(items);
   renderThreadManagerBulkbar(items);
   els.threadManagerResults.innerHTML = "";
   if (!items.length) {
-    els.threadManagerResults.innerHTML = '<div class="details-empty compact-empty">No threads match this view.</div>';
+    els.threadManagerResults.innerHTML = managerEmptyStateHtml();
     return;
   }
 
   for (const item of items) {
     els.threadManagerResults.appendChild(createThreadManagerRow(item));
   }
+}
+
+function renderThreadManagerTabs() {
+  const counts = threadManagerCounts();
+  for (const button of document.querySelectorAll("[data-manager-scope]")) {
+    const scope = button.getAttribute("data-manager-scope") || "active";
+    button.textContent = `${managerScopeLabel(scope)} ${formatNumber(counts[scope] || 0)}`;
+  }
+}
+
+function threadManagerCounts() {
+  const counts = { active: 0, archived: 0, hidden: 0, all: state.items.length };
+  for (const item of state.items) {
+    const visibility = threadVisibility(item);
+    if (hasOwn(counts, visibility)) counts[visibility] += 1;
+  }
+  return counts;
+}
+
+function managerScopeLabel(scope) {
+  if (scope === "all") return "All";
+  if (scope === "archived") return "Archived";
+  if (scope === "hidden") return "Hidden";
+  return "Active";
+}
+
+function renderThreadManagerResultSummary(items) {
+  if (!els.threadManagerResultSummary) return;
+  const count = formatNumber(items.length);
+  const scope = managerScopeLabel(state.threadManager.scope);
+  const noun = items.length === 1 ? "thread" : "threads";
+  const query = state.threadManager.query.trim();
+  els.threadManagerResultSummary.textContent = query ? `${count} results in ${scope}` : `${count} ${scope.toLowerCase()} ${noun}`;
 }
 
 function renderThreadManagerProjectOptions() {
@@ -932,54 +991,153 @@ function filteredManagerThreads() {
 
 function createThreadManagerRow(item) {
   const row = document.createElement("article");
-  row.className = "manager-thread-row";
+  const status = threadStatusPresentation(item);
+  const selected = state.threadManager.selectedIds.has(item.id);
+  row.className = `manager-thread-row ${selected ? "selected" : ""} ${item.id === state.codex.threadId ? "current" : ""}`;
   row.dataset.threadId = item.id;
   const visibility = threadVisibility(item);
-  const restoreButton =
-    visibility === "active"
-      ? ""
-      : '<button type="button" data-manager-action="restore">Restore to sidebar</button>';
-  const archiveButton =
-    visibility === "archived"
-      ? ""
-      : '<button type="button" data-manager-action="archive">Archive</button>';
-  const hideButton =
-    visibility === "hidden"
-      ? ""
-      : '<button type="button" data-manager-action="hide">Hide from sidebar</button>';
   row.innerHTML = `
     <label class="manager-row-check" title="Select thread">
       <input type="checkbox" data-manager-select="${escapeAttr(item.id)}" ${state.threadManager.selectedIds.has(item.id) ? "checked" : ""} />
     </label>
-    <div class="manager-thread-main">
-      <strong>${escapeHtml(threadTitle(item))}</strong>
-      <span>${escapeHtml(threadProjectPath(item) ? shortPath(threadProjectPath(item)) : item.preview || "No project path")}</span>
-      <em>${escapeHtml([titleCase(visibility), formatDate(threadUpdatedAt(item)), item.archived ? "Codex archived" : ""].filter(Boolean).join(" · "))}</em>
-    </div>
-    <div class="manager-row-actions">
-      <button type="button" data-manager-action="open">Open</button>
-      <button type="button" data-manager-action="rename">Rename</button>
-      <button type="button" data-manager-action="pin">${threadMetadata(item.id).pinned ? "Unpin" : "Pin"}</button>
-      ${restoreButton}
-      ${archiveButton}
-      ${hideButton}
+    <button class="manager-thread-main" type="button" data-manager-open="${escapeAttr(item.id)}">
+      <span class="manager-thread-title-row">
+        <strong>${escapeHtml(threadTitle(item))}</strong>
+        <span class="manager-thread-right">
+          <em class="thread-status-pill ${escapeAttr(status.className)}">${escapeHtml(status.label)}</em>
+          <span>${escapeHtml(formatDate(threadUpdatedAt(item)) || "No date")}</span>
+        </span>
+      </span>
+      <span class="manager-thread-meta-row">
+        <span>${escapeHtml(threadProjectPath(item) ? shortPath(threadProjectPath(item)) : item.preview || "No project path")}</span>
+        <em class="visibility-pill ${escapeAttr(visibility)}">${escapeHtml(titleCase(visibility))}</em>
+      </span>
+    </button>
+    <button class="thread-item-menu-button manager-row-menu-button" type="button" data-manager-menu aria-haspopup="menu" aria-expanded="false" title="Thread actions">...</button>
+    <div class="thread-item-menu manager-row-menu" role="menu" hidden>
+      ${managerThreadActionMenuHtml(item)}
     </div>
   `;
+  row.querySelector(".manager-row-check")?.addEventListener("click", (event) => event.stopPropagation());
+  row.querySelector("[data-manager-select]")?.addEventListener("change", (event) => {
+    const id = event.target.getAttribute("data-manager-select");
+    if (event.target.checked) state.threadManager.selectedIds.add(id);
+    else state.threadManager.selectedIds.delete(id);
+    renderThreadManager();
+  });
   row.addEventListener("click", (event) => {
-    const checkbox = event.target instanceof Element ? event.target.closest("[data-manager-select]") : null;
+    const target = event.target instanceof Element ? event.target : null;
+    const checkbox = target?.closest("[data-manager-select]");
     if (checkbox) {
       const id = checkbox.getAttribute("data-manager-select");
       if (checkbox.checked) state.threadManager.selectedIds.add(id);
       else state.threadManager.selectedIds.delete(id);
-      renderThreadManagerBulkbar(filteredManagerThreads());
+      renderThreadManager();
       return;
     }
-    const button = event.target instanceof Element ? event.target.closest("[data-manager-action]") : null;
-    if (!button) return;
-    const action = button.getAttribute("data-manager-action");
-    handleManagerThreadAction(action, item.id);
+    const menuButton = target?.closest("[data-manager-menu]");
+    if (menuButton) {
+      event.stopPropagation();
+      toggleThreadItemMenu(row);
+      return;
+    }
+    const button = target?.closest("[data-manager-action]");
+    if (button) {
+      event.stopPropagation();
+      closeThreadItemMenus();
+      const action = button.getAttribute("data-manager-action");
+      handleManagerThreadAction(action, item.id);
+      return;
+    }
+    if (target?.closest(".thread-item-menu")) return;
+    closeThreadManager();
+    resumeThreadFromNavigator(item.id);
   });
   return row;
+}
+
+function managerThreadActionMenuHtml(item) {
+  const visibility = threadVisibility(item);
+  const pinnedLabel = threadMetadata(item.id).pinned ? "Unpin" : "Pin";
+  const actions = [
+    { action: "open", label: "Open" },
+    { action: "rename", label: "Rename" },
+    { action: "pin", label: pinnedLabel },
+  ];
+  if (visibility === "active") {
+    actions.push({ action: "archive", label: "Archive" }, { action: "hide", label: "Hide from sidebar" });
+  } else if (visibility === "archived") {
+    actions.push({ action: "restore", label: "Restore to sidebar" }, { action: "hide", label: "Hide from sidebar" });
+  } else if (visibility === "hidden") {
+    actions.push({ action: "restore", label: "Restore to sidebar" }, { action: "archive", label: "Archive" });
+  }
+  return actions
+    .map((action) => `<button type="button" data-manager-action="${escapeAttr(action.action)}" role="menuitem">${escapeHtml(action.label)}</button>`)
+    .join("");
+}
+
+function managerEmptyStateHtml() {
+  const query = state.threadManager.query.trim();
+  if (query) {
+    return `
+      <div class="manager-empty-state">
+        <strong>No matching threads</strong>
+        <span>Try another keyword or search in All.</span>
+        ${state.threadManager.scope === "all" ? "" : '<button type="button" data-manager-empty-action="view-all">Search All</button>'}
+      </div>
+    `;
+  }
+  if (state.threadManager.scope === "active") {
+    return `
+      <div class="manager-empty-state">
+        <strong>No active threads</strong>
+        <span>Create a new thread or restore one from Archived.</span>
+        <div>
+          <button type="button" data-manager-empty-action="new-thread">New thread</button>
+          <button type="button" data-manager-empty-action="view-archived">View archived</button>
+        </div>
+      </div>
+    `;
+  }
+  if (state.threadManager.scope === "archived") {
+    return `
+      <div class="manager-empty-state">
+        <strong>No archived threads</strong>
+        <span>Archive completed threads to keep your sidebar clean.</span>
+      </div>
+    `;
+  }
+  if (state.threadManager.scope === "hidden") {
+    return `
+      <div class="manager-empty-state">
+        <strong>No hidden threads</strong>
+        <span>Hidden threads will appear here and can be restored anytime.</span>
+      </div>
+    `;
+  }
+  return `
+    <div class="manager-empty-state">
+      <strong>No threads found</strong>
+      <span>Threads appear here after the local index loads.</span>
+    </div>
+  `;
+}
+
+function handleManagerEmptyAction(action) {
+  if (action === "view-all") {
+    state.threadManager.scope = "all";
+    renderThreadManager();
+    return;
+  }
+  if (action === "view-archived") {
+    state.threadManager.scope = "archived";
+    renderThreadManager();
+    return;
+  }
+  if (action === "new-thread") {
+    closeThreadManager();
+    openNewThreadModal().catch((error) => appendChatLine("error", error.message));
+  }
 }
 
 function renderThreadManagerBulkbar(items) {
@@ -988,10 +1146,22 @@ function renderThreadManagerBulkbar(items) {
   els.threadManagerSelectedCount.textContent = `${formatNumber(state.threadManager.selectedIds.size)} selected`;
   els.threadManagerSelectAll.checked = visibleIds.length > 0 && selectedVisible.length === visibleIds.length;
   els.threadManagerSelectAll.indeterminate = selectedVisible.length > 0 && selectedVisible.length < visibleIds.length;
-  const disabled = state.threadManager.selectedIds.size === 0;
-  for (const button of [els.bulkRestoreThreads, els.bulkArchiveThreads, els.bulkHideThreads]) {
-    button.disabled = disabled;
+  const hasSelection = state.threadManager.selectedIds.size > 0;
+  els.threadManagerBulkbar.hidden = !hasSelection;
+  const allowed = new Set(managerBulkActionsForScope(state.threadManager.scope));
+  for (const button of [els.bulkRestoreThreads, els.bulkArchiveThreads, els.bulkHideThreads, els.bulkPinThreads]) {
+    if (!button) continue;
+    const action = button.getAttribute("data-bulk-action");
+    button.hidden = !allowed.has(action);
+    button.disabled = !hasSelection;
   }
+}
+
+function managerBulkActionsForScope(scope) {
+  if (scope === "archived") return ["restore", "hide"];
+  if (scope === "hidden") return ["restore", "archive"];
+  if (scope === "all") return ["archive", "hide", "restore", "pin"];
+  return ["archive", "hide", "pin"];
 }
 
 function setVisibleManagerSelection(checked) {
@@ -1002,12 +1172,41 @@ function setVisibleManagerSelection(checked) {
   renderThreadManager();
 }
 
-function bulkUpdateThreads(patch) {
+function bulkUpdateThreads(action) {
   const ids = [...state.threadManager.selectedIds];
+  if (!ids.length) return;
+  const previous = ids.map((id) => ({
+    threadId: id,
+    patch: { visibility: threadVisibility(id), pinned: Boolean(threadMetadata(id).pinned) },
+  }));
+  const patch =
+    action === "restore"
+      ? { visibility: "active" }
+      : action === "archive"
+        ? { visibility: "archived" }
+        : action === "hide"
+          ? { visibility: "hidden" }
+          : action === "pin"
+            ? { pinned: true }
+            : null;
+  if (!patch) return;
   for (const id of ids) updateThreadMetadata(id, patch);
-  showToast(`${formatNumber(ids.length)} threads updated.`);
   state.threadManager.selectedIds.clear();
   renderThreadManager();
+  const count = formatNumber(ids.length);
+  if (action === "restore") {
+    showToast(`${count} ${ids.length === 1 ? "thread restored" : "threads restored"} to sidebar.`);
+    return;
+  }
+  const message =
+    action === "archive"
+      ? `${count} ${ids.length === 1 ? "thread archived" : "threads archived"}.`
+      : action === "hide"
+        ? `${count} ${ids.length === 1 ? "thread hidden" : "threads hidden"} from sidebar.`
+        : `${count} ${ids.length === 1 ? "thread pinned" : "threads pinned"}.`;
+  const actions = [{ label: "Undo", action: "bulk-restore-metadata", entries: previous }];
+  if (action === "hide") actions.push({ label: "View hidden", action: "view-hidden" });
+  showToast(message, actions);
 }
 
 function handleManagerThreadAction(action, threadId) {
@@ -1026,6 +1225,8 @@ function handleManagerThreadAction(action, threadId) {
 
 function openPersonalizationWizard() {
   state.personalization.step = 1;
+  state.personalization.analyzing = false;
+  state.personalization.analysisError = "";
   state.personalization.preview = null;
   state.personalization.suggestions = [];
   if (!state.personalization.selectedThreadIds.size && state.codex.threadId) {
@@ -1044,14 +1245,17 @@ function syncPersonalizationProjectLabels() {
   const project = state.projectRoot || els.chatCwd.value || "Current project";
   if (els.personalizationProjectLabel) els.personalizationProjectLabel.textContent = shortPath(project);
   if (els.projectAgentsPath) els.projectAgentsPath.textContent = shortPath(`${project}/AGENTS.md`);
+  syncPersonalizationScopeCounts();
 }
 
 function renderPersonalizationWizard() {
   const step = state.personalization.step;
   els.personalizationSubtitle.textContent =
-    step === 1 ? "Learn from past threads" : step === 2 ? "Choose suggestions" : step === 3 ? "Choose write target" : "Preview before apply";
-  els.personalizationSteps.innerHTML = [1, 2, 3, 4]
-    .map((item) => `<span class="${item === step ? "active" : item < step ? "done" : ""}">${item}</span>`)
+    "Learn repeated workflow patterns from past threads and propose AGENTS.md updates. Nothing is written until you approve a diff.";
+  els.personalizationSteps.innerHTML = PERSONALIZATION_STEPS.map((item) => {
+    const className = item.id === step ? "active" : item.id < step ? "done" : "";
+    return `<span class="${className}"><b>${item.id}</b>${escapeHtml(item.label)}</span>`;
+  })
     .join("");
   for (const panel of document.querySelectorAll("[data-personalization-step]")) {
     const active = Number(panel.getAttribute("data-personalization-step")) === step;
@@ -1062,30 +1266,54 @@ function renderPersonalizationWizard() {
   els.personalizationNext.hidden = step === 4;
   els.personalizationApply.hidden = step !== 4;
   els.personalizationSaveDraft.hidden = step !== 4;
-  els.personalizationApply.disabled = !state.personalization.preview;
-  if (step === 2) renderPersonalizationSuggestions();
+  els.personalizationNext.disabled = state.personalization.analyzing || (step === 3 && selectedPersonalizationSuggestions().length === 0);
+  els.personalizationNext.textContent = step === 2 ? (state.personalization.analyzing ? "Analyzing..." : "Start analysis") : step === 3 ? "Preview diff" : "Next";
+  els.personalizationApply.disabled = !state.personalization.preview || !state.personalization.preview.previews?.length;
   if (step === 1) {
+    syncPersonalizationScopeCounts();
     renderPersonalizationThreadPicker();
     updatePersonalizationThreadPickerVisibility();
   }
+  if (step === 2) renderPersonalizationAnalyzeStep();
+  if (step === 3) renderPersonalizationSuggestions();
   if (step === 4 && !state.personalization.preview) {
     previewAgentsChanges().catch((error) => {
       els.agentsPreviewMeta.textContent = error.message;
-      els.agentsDiffPreview.textContent = "";
+      els.agentsDiffPreview.innerHTML = "";
     });
   }
 }
 
 async function nextPersonalizationStep() {
   if (state.personalization.step === 1) {
-    try {
-      state.personalization.suggestions = await fetchPersonalizationSuggestions();
-    } catch (error) {
-      showToast(error.message);
+    if (personalizationScope() === "selected_threads" && !state.personalization.selectedThreadIds.size) {
+      showToast("Choose at least one thread to analyze.");
       return;
     }
+    state.personalization.preview = null;
+    state.personalization.step = 2;
+    renderPersonalizationWizard();
+    return;
   }
-  if (state.personalization.step === 2 && selectedPersonalizationSuggestions().length === 0) {
+  if (state.personalization.step === 2) {
+    state.personalization.analyzing = true;
+    state.personalization.analysisError = "";
+    state.personalization.suggestions = [];
+    state.personalization.preview = null;
+    renderPersonalizationWizard();
+    try {
+      state.personalization.suggestions = await fetchPersonalizationSuggestions();
+      state.personalization.step = 3;
+    } catch (error) {
+      state.personalization.analysisError = error.message;
+      showToast(error.message);
+    } finally {
+      state.personalization.analyzing = false;
+      renderPersonalizationWizard();
+    }
+    return;
+  }
+  if (state.personalization.step === 3 && selectedPersonalizationSuggestions().length === 0) {
     showToast("Select at least one suggestion before previewing a diff.");
     return;
   }
@@ -1104,21 +1332,82 @@ function personalizationScope() {
   return document.querySelector('input[name="personalizationScope"]:checked')?.value || "current_project";
 }
 
-function agentsTarget() {
-  return document.querySelector('input[name="agentsTarget"]:checked')?.value || "project";
+function personalizationPayload() {
+  return {
+    scope: personalizationScope(),
+    include: personalizationIncludedVisibilities(),
+    projectPath: state.projectRoot || els.chatCwd.value || "",
+    selectedThreadIds: [...state.personalization.selectedThreadIds],
+  };
 }
 
-function personalizationPayload() {
+function personalizationIncludedVisibilities() {
   const include = [];
   if (els.personalizationIncludeActive.checked) include.push("active");
   if (els.personalizationIncludeArchived.checked) include.push("archived");
   if (els.personalizationIncludeHidden.checked) include.push("hidden");
-  return {
-    scope: personalizationScope(),
-    include,
-    projectPath: state.projectRoot || els.chatCwd.value || "",
-    selectedThreadIds: [...state.personalization.selectedThreadIds],
-  };
+  return include;
+}
+
+function personalizationScopeItems(scope = personalizationScope()) {
+  const include = new Set(personalizationIncludedVisibilities());
+  const projectPath = state.projectRoot || els.chatCwd.value || "";
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  return state.items.filter((item) => {
+    if (!include.has(threadVisibility(item))) return false;
+    if (scope === "current_project" && projectPath && threadProjectPath(item) !== projectPath) return false;
+    if (scope === "selected_threads" && !state.personalization.selectedThreadIds.has(item.id)) return false;
+    if (scope === "last_30_days" && new Date(threadUpdatedAt(item) || 0).getTime() < cutoff) return false;
+    return true;
+  });
+}
+
+function syncPersonalizationScopeCounts() {
+  if (!els.scopeCountCurrentProject) return;
+  els.scopeCountCurrentProject.textContent = `${formatNumber(personalizationScopeItems("current_project").length)} threads found`;
+  els.scopeCountAllProjects.textContent = `${formatNumber(personalizationScopeItems("all_projects").length)} threads found`;
+  els.scopeCountSelectedThreads.textContent = `${formatNumber(state.personalization.selectedThreadIds.size)} selected`;
+  els.scopeCountLast30Days.textContent = `${formatNumber(personalizationScopeItems("last_30_days").length)} threads found`;
+  const hiddenChecked = Boolean(els.personalizationIncludeHidden.checked);
+  const hint = document.getElementById("personalizationHiddenHint");
+  if (hint) {
+    hint.textContent = hiddenChecked
+      ? "Hidden threads may include items you intentionally removed from normal views."
+      : "Hidden threads are excluded by default.";
+  }
+}
+
+function renderPersonalizationAnalyzeStep() {
+  const count = personalizationScopeItems().length;
+  const include = personalizationIncludedVisibilities().map(titleCase).join(" + ") || "No thread states";
+  const scopeLabel = personalizationScopeLabel(personalizationScope());
+  els.personalizationAnalyzeSummary.textContent = `${formatNumber(count)} ${count === 1 ? "thread" : "threads"} · ${include} · ${scopeLabel}`;
+  if (!els.personalizationAnalysisState) return;
+  if (state.personalization.analyzing) {
+    els.personalizationAnalysisState.hidden = false;
+    els.personalizationAnalysisState.innerHTML = `
+      <strong>Analyzing threads...</strong>
+      <span>Reading ${escapeHtml(formatNumber(count))} ${count === 1 ? "thread" : "threads"} and generating candidate rules.</span>
+    `;
+    return;
+  }
+  if (state.personalization.analysisError) {
+    els.personalizationAnalysisState.hidden = false;
+    els.personalizationAnalysisState.innerHTML = `
+      <strong>Analysis failed</strong>
+      <span>${escapeHtml(state.personalization.analysisError)}</span>
+    `;
+    return;
+  }
+  els.personalizationAnalysisState.hidden = true;
+  els.personalizationAnalysisState.innerHTML = "";
+}
+
+function personalizationScopeLabel(scope) {
+  if (scope === "all_projects") return "all projects";
+  if (scope === "selected_threads") return "selected threads";
+  if (scope === "last_30_days") return "last 30 days";
+  return "current project";
 }
 
 async function fetchPersonalizationSuggestions() {
@@ -1126,49 +1415,157 @@ async function fetchPersonalizationSuggestions() {
   return (data.suggestions || []).map((item, index) => ({
     id: item.id || `suggestion-${index}`,
     category: item.category || "Detected patterns",
-    target: item.target || "global",
+    target: normalizeSuggestionTarget(item.target),
     text: item.text || "",
     evidence: item.evidence || "",
+    confidence: item.confidence || "",
+    evidenceCount: Number(item.evidenceCount || 0),
+    editing: false,
+    showingEvidence: false,
     selected: item.selected !== false,
   }));
+}
+
+function normalizeSuggestionTarget(value) {
+  if (value === "project" || value === "project_agents") return "project_agents";
+  if (value === "ignore") return "ignore";
+  return "global_agents";
 }
 
 function renderPersonalizationSuggestions() {
   els.personalizationSuggestions.innerHTML = "";
   if (!state.personalization.suggestions.length) {
-    els.personalizationSuggestions.innerHTML = '<div class="details-empty compact-empty">No suggestions generated from the selected scope.</div>';
+    els.personalizationSuggestions.innerHTML = `
+      <div class="wizard-empty-state">
+        <strong>No reusable patterns found</strong>
+        <span>The selected threads did not produce high-confidence AGENTS.md suggestions. Try a broader scope or include archived threads.</span>
+      </div>
+    `;
+    els.personalizationNext.disabled = true;
     return;
   }
+  const groups = new Map();
   for (const suggestion of state.personalization.suggestions) {
-    const label = document.createElement("label");
-    label.className = "suggestion-card";
-    label.innerHTML = `
-      <input type="checkbox" data-suggestion-id="${escapeAttr(suggestion.id)}" ${suggestion.selected ? "checked" : ""} />
-      <span>
-        <strong>${escapeHtml(suggestion.category)}</strong>
-        ${escapeHtml(suggestion.text)}
-        ${suggestion.evidence ? `<em>${escapeHtml(suggestion.evidence)}</em>` : ""}
-      </span>
-    `;
-    label.querySelector("input").addEventListener("change", (event) => {
-      const id = event.target.getAttribute("data-suggestion-id");
-      const item = state.personalization.suggestions.find((entry) => entry.id === id);
-      if (item) item.selected = event.target.checked;
-      state.personalization.preview = null;
-    });
-    els.personalizationSuggestions.appendChild(label);
+    const key = suggestion.category || "Other";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(suggestion);
+  }
+  for (const [category, suggestions] of groups.entries()) {
+    const group = document.createElement("section");
+    group.className = "suggestion-group";
+    group.innerHTML = `<h4>${escapeHtml(category)}</h4>`;
+    for (const suggestion of suggestions) group.appendChild(createSuggestionReviewCard(suggestion));
+    els.personalizationSuggestions.appendChild(group);
   }
 }
 
+function createSuggestionReviewCard(suggestion) {
+  const card = document.createElement("article");
+  card.className = `suggestion-card ${suggestion.selected ? "selected" : ""}`;
+  card.dataset.suggestionId = suggestion.id;
+  const targetLabel = suggestionTargetLabel(suggestion.target);
+  const evidenceMeta = suggestionEvidenceMeta(suggestion);
+  card.innerHTML = `
+    <div class="suggestion-card-main">
+      <label class="suggestion-check">
+        <input type="checkbox" data-suggestion-id="${escapeAttr(suggestion.id)}" ${suggestion.selected ? "checked" : ""} />
+        <span>
+          ${
+            suggestion.editing
+              ? `<textarea data-suggestion-text="${escapeAttr(suggestion.id)}" rows="2">${escapeHtml(suggestion.text)}</textarea>`
+              : `<strong>${escapeHtml(suggestion.text)}</strong>`
+          }
+          <em>${escapeHtml([evidenceMeta, targetLabel].filter(Boolean).join(" · "))}</em>
+        </span>
+      </label>
+      <div class="suggestion-card-actions">
+        <select data-suggestion-target="${escapeAttr(suggestion.id)}" aria-label="Write target">
+          <option value="project_agents" ${suggestion.target === "project_agents" ? "selected" : ""}>Project AGENTS</option>
+          <option value="global_agents" ${suggestion.target === "global_agents" ? "selected" : ""}>Global AGENTS</option>
+          <option value="ignore" ${suggestion.target === "ignore" ? "selected" : ""}>Ignore</option>
+        </select>
+        <button type="button" data-suggestion-edit="${escapeAttr(suggestion.id)}">${suggestion.editing ? "Done" : "Edit"}</button>
+        ${suggestion.evidence ? `<button type="button" data-suggestion-evidence="${escapeAttr(suggestion.id)}">${suggestion.showingEvidence ? "Hide evidence" : "View evidence"}</button>` : ""}
+      </div>
+    </div>
+    ${
+      suggestion.showingEvidence && suggestion.evidence
+        ? `<div class="suggestion-evidence"><strong>Evidence</strong><span>${escapeHtml(suggestion.evidence)}</span></div>`
+        : ""
+    }
+  `;
+  card.querySelector("[data-suggestion-id]")?.addEventListener("change", (event) => {
+    const id = event.target.getAttribute("data-suggestion-id");
+    const item = state.personalization.suggestions.find((entry) => entry.id === id);
+    if (item) item.selected = event.target.checked;
+    state.personalization.preview = null;
+    renderPersonalizationWizard();
+  });
+  card.querySelector("[data-suggestion-target]")?.addEventListener("change", (event) => {
+    const id = event.target.getAttribute("data-suggestion-target");
+    const item = state.personalization.suggestions.find((entry) => entry.id === id);
+    if (item) {
+      item.target = normalizeSuggestionTarget(event.target.value);
+      item.selected = item.target !== "ignore";
+    }
+    state.personalization.preview = null;
+    renderPersonalizationWizard();
+  });
+  card.querySelector("[data-suggestion-edit]")?.addEventListener("click", (event) => {
+    const id = event.target.getAttribute("data-suggestion-edit");
+    const item = state.personalization.suggestions.find((entry) => entry.id === id);
+    if (item) item.editing = !item.editing;
+    state.personalization.preview = null;
+    renderPersonalizationSuggestions();
+    if (item?.editing) {
+      const input = [...els.personalizationSuggestions.querySelectorAll("[data-suggestion-text]")].find(
+        (entry) => entry.getAttribute("data-suggestion-text") === id,
+      );
+      input?.focus();
+    }
+  });
+  card.querySelector("[data-suggestion-text]")?.addEventListener("input", (event) => {
+    const id = event.target.getAttribute("data-suggestion-text");
+    const item = state.personalization.suggestions.find((entry) => entry.id === id);
+    if (item) item.text = event.target.value;
+    state.personalization.preview = null;
+  });
+  card.querySelector("[data-suggestion-evidence]")?.addEventListener("click", (event) => {
+    const id = event.target.getAttribute("data-suggestion-evidence");
+    const item = state.personalization.suggestions.find((entry) => entry.id === id);
+    if (item) item.showingEvidence = !item.showingEvidence;
+    renderPersonalizationSuggestions();
+  });
+  return card;
+}
+
+function suggestionEvidenceMeta(suggestion) {
+  const parts = [];
+  if (suggestion.evidenceCount) parts.push(`Seen in ${formatNumber(suggestion.evidenceCount)} threads`);
+  if (suggestion.confidence) parts.push(`confidence ${suggestion.confidence}`);
+  return parts.join(" · ");
+}
+
+function suggestionTargetLabel(target) {
+  if (target === "project_agents") return "Project AGENTS";
+  if (target === "ignore") return "Ignored";
+  return "Global AGENTS";
+}
+
 function updatePersonalizationThreadPickerVisibility() {
-  const visible = personalizationScope() === "selected_thread";
+  const visible = personalizationScope() === "selected_threads";
   els.personalizationThreadPicker.hidden = !visible;
 }
 
 function renderPersonalizationThreadPicker() {
   if (!els.personalizationThreadList) return;
   const query = state.personalization.threadQuery || "";
-  const items = state.items.filter((item) => threadMatchesQuery(item, query)).sort(compareThreadsRecent).slice(0, 80);
+  const include = new Set(personalizationIncludedVisibilities());
+  const items = state.items
+    .filter((item) => include.has(threadVisibility(item)))
+    .filter((item) => threadMatchesQuery(item, query))
+    .sort(compareThreadsRecent)
+    .slice(0, 80);
   els.personalizationThreadList.innerHTML = "";
   if (!items.length) {
     els.personalizationThreadList.innerHTML = '<div class="details-empty compact-empty">No threads match.</div>';
@@ -1189,57 +1586,111 @@ function renderPersonalizationThreadPicker() {
       if (event.target.checked) state.personalization.selectedThreadIds.add(id);
       else state.personalization.selectedThreadIds.delete(id);
       state.personalization.preview = null;
+      syncPersonalizationScopeCounts();
     });
     els.personalizationThreadList.appendChild(label);
   }
 }
 
 function selectedPersonalizationSuggestions() {
-  return state.personalization.suggestions.filter((item) => item.selected);
+  return state.personalization.suggestions.filter((item) => item.selected && item.target !== "ignore" && item.text.trim());
 }
 
 function agentsEntriesForPreview() {
-  const target = agentsTarget();
-  return selectedPersonalizationSuggestions()
-    .filter((item) => target === "project" || item.target !== "project")
-    .map((item) => ({
+  const entries = { project: [], global: [] };
+  for (const item of selectedPersonalizationSuggestions()) {
+    const target = item.target === "project_agents" ? "project" : "global";
+    entries[target].push({
       category: item.category,
-      text: item.text,
-    }));
+      text: item.text.trim(),
+    });
+  }
+  return entries;
 }
 
 async function previewAgentsChanges() {
-  const target = agentsTarget();
-  const entries = agentsEntriesForPreview();
-  if (!entries.length) {
+  const entriesByTarget = agentsEntriesForPreview();
+  const targets = Object.entries(entriesByTarget).filter(([, entries]) => entries.length);
+  if (!targets.length) {
     els.agentsPreviewMeta.textContent = "No selected suggestions apply to this target.";
-    els.agentsDiffPreview.textContent = "";
+    els.agentsDiffPreview.innerHTML = "";
     state.personalization.preview = null;
     els.personalizationApply.disabled = true;
     return;
   }
   els.agentsPreviewMeta.textContent = "Generating diff preview...";
-  els.agentsDiffPreview.textContent = "";
-  const preview = await postJson("/api/agents/preview", { target, entries });
-  state.personalization.preview = preview;
-  els.agentsPreviewMeta.textContent = `${preview.exists ? "Updating" : "Creating"} ${shortPath(preview.targetPath || "")}`;
-  els.agentsDiffPreview.textContent = preview.diff || "(no changes)";
-  els.personalizationApply.disabled = !preview.diff;
+  els.agentsDiffPreview.innerHTML = "";
+  if (els.agentsTargetSummary) {
+    els.agentsTargetSummary.innerHTML = targets
+      .map(([target, entries]) => agentsTargetSummaryHtml(target, entries.length))
+      .join("");
+  }
+  const previews = [];
+  for (const [target, entries] of targets) {
+    const preview = await postJson("/api/agents/preview", { target, entries });
+    previews.push({ target, entries, ...preview });
+  }
+  state.personalization.preview = { previews };
+  renderAgentsPreview(previews);
+  els.personalizationApply.disabled = !previews.some((preview) => preview.diff);
+}
+
+function agentsTargetSummaryHtml(target, count) {
+  const project = state.projectRoot || els.chatCwd.value || "";
+  const path = target === "project" ? `${project}/AGENTS.md` : `${state.codexHome || "~/.codex"}/AGENTS.md`;
+  const label = target === "project" ? "Project AGENTS.md" : "Global AGENTS.md";
+  return `
+    <div class="agents-target-card">
+      <strong>${escapeHtml(label)}</strong>
+      <span>${escapeHtml(shortPath(path) || path)}</span>
+      <em>${formatNumber(count)} ${count === 1 ? "rule" : "rules"} selected</em>
+    </div>
+  `;
+}
+
+function renderAgentsPreview(previews) {
+  if (els.agentsTargetSummary) {
+    els.agentsTargetSummary.innerHTML = previews
+      .map((preview) => agentsTargetSummaryHtml(preview.target, preview.entries?.length || 0))
+      .join("");
+  }
+  els.agentsPreviewMeta.textContent = `${formatNumber(previews.length)} target ${previews.length === 1 ? "file" : "files"} ready for review. Nothing is written until Apply changes.`;
+  els.agentsDiffPreview.innerHTML = previews
+    .map((preview) => {
+      const stateLabel = preview.exists ? "This file will be updated" : "This file will be created";
+      return `
+        <section class="agents-diff-card">
+          <div>
+            <strong>${escapeHtml(shortPath(preview.targetPath || "") || preview.targetPath || "AGENTS.md")}</strong>
+            <span>${escapeHtml(stateLabel)}</span>
+          </div>
+          <pre class="diff-preview">${escapeHtml(preview.diff || "(no changes)")}</pre>
+        </section>
+      `;
+    })
+    .join("");
 }
 
 async function applyAgentsChanges() {
-  if (!state.personalization.preview) return;
-  const entries = agentsEntriesForPreview();
-  const result = await postJson("/api/agents/apply", { target: agentsTarget(), entries });
-  showToast(`AGENTS.md updated: ${shortPath(result.targetPath || "")}`);
+  if (!state.personalization.preview?.previews?.length) return;
+  for (const preview of state.personalization.preview.previews) {
+    if (!preview.entries?.length) continue;
+    await postJson("/api/agents/apply", { target: preview.target, entries: preview.entries });
+  }
+  const projectCount = state.personalization.preview.previews
+    .filter((preview) => preview.target === "project")
+    .reduce((total, preview) => total + (preview.entries?.length || 0), 0);
+  const globalCount = state.personalization.preview.previews
+    .filter((preview) => preview.target === "global")
+    .reduce((total, preview) => total + (preview.entries?.length || 0), 0);
+  showToast(`AGENTS.md updated. ${projectCount} project ${projectCount === 1 ? "rule" : "rules"} and ${globalCount} global ${globalCount === 1 ? "rule" : "rules"} added.`);
   closePersonalizationWizard();
 }
 
 function saveAgentsDraft() {
   const draft = {
-    target: agentsTarget(),
     entries: agentsEntriesForPreview(),
-    diff: state.personalization.preview?.diff || "",
+    previews: state.personalization.preview?.previews || [],
     savedAt: new Date().toISOString(),
   };
   try {
@@ -6092,9 +6543,18 @@ els.threadManagerSort.addEventListener("change", () => {
   renderThreadManager();
 });
 els.threadManagerSelectAll.addEventListener("change", () => setVisibleManagerSelection(els.threadManagerSelectAll.checked));
-els.bulkRestoreThreads.addEventListener("click", () => bulkUpdateThreads({ visibility: "active" }));
-els.bulkArchiveThreads.addEventListener("click", () => bulkUpdateThreads({ visibility: "archived" }));
-els.bulkHideThreads.addEventListener("click", () => bulkUpdateThreads({ visibility: "hidden" }));
+els.bulkRestoreThreads.addEventListener("click", () => bulkUpdateThreads("restore"));
+els.bulkArchiveThreads.addEventListener("click", () => bulkUpdateThreads("archive"));
+els.bulkHideThreads.addEventListener("click", () => bulkUpdateThreads("hide"));
+els.bulkPinThreads.addEventListener("click", () => bulkUpdateThreads("pin"));
+els.bulkCancelThreads.addEventListener("click", () => {
+  state.threadManager.selectedIds.clear();
+  renderThreadManager();
+});
+els.threadManagerResults.addEventListener("click", (event) => {
+  const button = event.target instanceof Element ? event.target.closest("[data-manager-empty-action]") : null;
+  if (button) handleManagerEmptyAction(button.getAttribute("data-manager-empty-action"));
+});
 els.chatHeaderRename.addEventListener("click", renameActiveThread);
 els.closeRenameThreadModal.addEventListener("click", closeRenameThreadModal);
 els.cancelRenameThread.addEventListener("click", closeRenameThreadModal);
@@ -6128,7 +6588,15 @@ for (const input of document.querySelectorAll('input[name="agentsTarget"]')) {
 for (const input of document.querySelectorAll('input[name="personalizationScope"]')) {
   input.addEventListener("change", () => {
     state.personalization.preview = null;
+    syncPersonalizationScopeCounts();
     updatePersonalizationThreadPickerVisibility();
+  });
+}
+for (const input of [els.personalizationIncludeActive, els.personalizationIncludeArchived, els.personalizationIncludeHidden]) {
+  input.addEventListener("change", () => {
+    state.personalization.preview = null;
+    syncPersonalizationScopeCounts();
+    renderPersonalizationThreadPicker();
   });
 }
 els.personalizationThreadSearch.addEventListener("input", () => {
@@ -6253,6 +6721,7 @@ document.addEventListener("click", (event) => {
   if (event.target instanceof Element && event.target.closest(".resume-action")) return;
   if (event.target instanceof Element && event.target.closest(".more-action")) return;
   if (event.target instanceof Element && event.target.closest(".sidebar-thread")) return;
+  if (event.target instanceof Element && event.target.closest(".manager-thread-row")) return;
   closeChoiceMenus();
   closeThreadItemMenus();
 });

@@ -420,20 +420,20 @@
         </section>
       </div>
 
-      <div class="modal-backdrop drawer-backdrop" id="threadManagerModal" hidden>
-        <section class="modal-panel drawer-panel thread-manager-panel" role="dialog" aria-modal="true" aria-labelledby="threadManagerTitle">
+      <div class="modal-backdrop" id="threadManagerModal" hidden>
+        <section class="modal-panel thread-manager-panel" role="dialog" aria-modal="true" aria-labelledby="threadManagerTitle">
           <div class="modal-header">
             <div>
               <h2 id="threadManagerTitle">Manage threads</h2>
-              <p>Local visibility and display metadata</p>
+              <p>Rename, pin, archive, hide, and restore threads locally. Archive and hide are recoverable.</p>
             </div>
             <button id="closeThreadManager" class="icon-button" type="button" aria-label="Close">Close</button>
           </div>
           <div class="modal-body manager-body">
             <div class="manager-toolbar">
-              <label class="search-field compact-search">
+              <label class="search-field compact-search manager-search">
                 <span>Search</span>
-                <input id="threadManagerSearch" type="search" placeholder="Search all threads..." autocomplete="off" />
+                <input id="threadManagerSearch" type="search" placeholder="Search threads..." autocomplete="off" />
               </label>
               <div class="segmented-control" aria-label="Thread visibility scope">
                 <button class="active" type="button" data-manager-scope="active">Active</button>
@@ -441,49 +441,90 @@
                 <button type="button" data-manager-scope="hidden">Hidden</button>
                 <button type="button" data-manager-scope="all">All</button>
               </div>
-              <label>
-                <span>Project</span>
-                <select id="threadManagerProject"></select>
-              </label>
-              <label>
-                <span>Sort</span>
-                <select id="threadManagerSort">
-                  <option value="recent">Recent</option>
-                  <option value="title">Title</option>
-                  <option value="project">Project</option>
-                </select>
-              </label>
+              <div class="manager-filter-row">
+                <label>
+                  <span>Project</span>
+                  <select id="threadManagerProject"></select>
+                </label>
+                <label>
+                  <span>Sort</span>
+                  <select id="threadManagerSort">
+                    <option value="recent">Recent</option>
+                    <option value="title">Title</option>
+                    <option value="project">Project</option>
+                  </select>
+                </label>
+              </div>
             </div>
-            <div class="manager-bulkbar" id="threadManagerBulkbar">
-              <label><input id="threadManagerSelectAll" type="checkbox" /> Select visible</label>
-              <span id="threadManagerSelectedCount">0 selected</span>
-              <button id="bulkRestoreThreads" type="button">Restore to sidebar</button>
-              <button id="bulkArchiveThreads" type="button">Archive</button>
-              <button id="bulkHideThreads" type="button">Hide from sidebar</button>
+            <div class="manager-results-header">
+              <label class="manager-select-visible"><input id="threadManagerSelectAll" type="checkbox" /> Select visible</label>
+              <span id="threadManagerResultSummary">0 threads</span>
             </div>
             <div id="threadManagerResults" class="manager-results"></div>
+            <div class="manager-bulkbar" id="threadManagerBulkbar" hidden>
+              <span id="threadManagerSelectedCount">0 selected</span>
+              <div class="manager-bulk-actions">
+                <button id="bulkRestoreThreads" type="button" data-bulk-action="restore">Restore</button>
+                <button id="bulkArchiveThreads" type="button" data-bulk-action="archive">Archive</button>
+                <button id="bulkHideThreads" type="button" data-bulk-action="hide">Hide</button>
+                <button id="bulkPinThreads" type="button" data-bulk-action="pin">Pin</button>
+                <button id="bulkCancelThreads" class="button-ghost" type="button" data-bulk-action="cancel">Cancel</button>
+              </div>
+            </div>
           </div>
         </section>
       </div>
 
-      <div class="modal-backdrop drawer-backdrop" id="personalizationModal" hidden>
-        <section class="modal-panel drawer-panel personalization-panel" role="dialog" aria-modal="true" aria-labelledby="personalizationTitle">
+      <div class="modal-backdrop" id="personalizationModal" hidden>
+        <section class="modal-panel personalization-panel" role="dialog" aria-modal="true" aria-labelledby="personalizationTitle">
           <div class="modal-header">
             <div>
               <h2 id="personalizationTitle">Personalize Codex</h2>
-              <p id="personalizationSubtitle">Learn from past threads</p>
+              <p id="personalizationSubtitle">Learn repeated workflow patterns from past threads and propose AGENTS.md updates. Nothing is written until you approve a diff.</p>
             </div>
             <button id="closePersonalization" class="icon-button" type="button" aria-label="Close">Close</button>
           </div>
           <div class="modal-body wizard-body">
             <div class="wizard-steps" id="personalizationSteps"></div>
             <section class="wizard-step active" data-personalization-step="1">
-              <h3>Learn from past threads</h3>
-              <div class="wizard-options">
-                <label><input name="personalizationScope" type="radio" value="current_project" checked /> Current project only: <strong id="personalizationProjectLabel">Current project</strong></label>
-                <label><input name="personalizationScope" type="radio" value="all_projects" /> All projects</label>
-                <label><input name="personalizationScope" type="radio" value="selected_thread" /> Selected threads</label>
-                <label><input name="personalizationScope" type="radio" value="last_30_days" /> Last 30 days</label>
+              <div class="wizard-section-heading">
+                <h3>What should Codex learn from?</h3>
+                <p>Choose the threads used to detect repeated workflow patterns.</p>
+              </div>
+              <div class="scope-option-list" id="personalizationScopeOptions">
+                <label class="scope-option-card">
+                  <input name="personalizationScope" type="radio" value="current_project" checked />
+                  <span>
+                    <strong>Current project <em>Recommended</em></strong>
+                    <small id="personalizationProjectLabel">Current project</small>
+                    <span>Best for project-specific AGENTS.md updates.</span>
+                    <b id="scopeCountCurrentProject">0 threads found</b>
+                  </span>
+                </label>
+                <label class="scope-option-card">
+                  <input name="personalizationScope" type="radio" value="all_projects" />
+                  <span>
+                    <strong>All projects</strong>
+                    <span>Best for global preferences and general working style.</span>
+                    <b id="scopeCountAllProjects">0 threads found</b>
+                  </span>
+                </label>
+                <label class="scope-option-card">
+                  <input name="personalizationScope" type="radio" value="selected_threads" />
+                  <span>
+                    <strong>Selected threads</strong>
+                    <span>Manually pick the threads to learn from.</span>
+                    <b id="scopeCountSelectedThreads">0 selected</b>
+                  </span>
+                </label>
+                <label class="scope-option-card">
+                  <input name="personalizationScope" type="radio" value="last_30_days" />
+                  <span>
+                    <strong>Last 30 days</strong>
+                    <span>Use recent behavior only.</span>
+                    <b id="scopeCountLast30Days">0 threads found</b>
+                  </span>
+                </label>
               </div>
               <div class="thread-picker" id="personalizationThreadPicker" hidden>
                 <label class="search-field compact-search">
@@ -492,28 +533,48 @@
                 </label>
                 <div class="thread-picker-list" id="personalizationThreadList"></div>
               </div>
-              <h3>Include</h3>
-              <div class="wizard-options inline-options">
-                <label><input id="personalizationIncludeActive" type="checkbox" checked /> Active threads</label>
-                <label><input id="personalizationIncludeArchived" type="checkbox" checked /> Archived threads</label>
-                <label><input id="personalizationIncludeHidden" type="checkbox" /> Hidden threads</label>
+              <div class="include-section">
+                <h3>Include</h3>
+                <div class="include-chips">
+                  <label><input id="personalizationIncludeActive" type="checkbox" checked /> Active</label>
+                  <label><input id="personalizationIncludeArchived" type="checkbox" checked /> Archived</label>
+                  <label><input id="personalizationIncludeHidden" type="checkbox" /> Hidden</label>
+                </div>
+                <p id="personalizationHiddenHint">Hidden threads are excluded by default.</p>
               </div>
             </section>
             <section class="wizard-step" data-personalization-step="2" hidden>
-              <h3>Detected patterns</h3>
-              <div id="personalizationSuggestions" class="suggestion-list"></div>
+              <div class="wizard-section-heading">
+                <h3>Analyze threads</h3>
+                <p>Codex will look for repeated instructions, workflow habits, verification commands, and project conventions.</p>
+              </div>
+              <div class="analysis-summary-card">
+                <strong>Sources</strong>
+                <span id="personalizationAnalyzeSummary">0 threads</span>
+              </div>
+              <div class="analysis-plan" id="personalizationAnalysisPlan">
+                <span>Read thread titles and summaries</span>
+                <span>Detect repeated user instructions</span>
+                <span>Classify global preferences vs project conventions</span>
+                <span>Generate candidate AGENTS.md entries</span>
+              </div>
+              <div id="personalizationAnalysisState" class="analysis-state" hidden></div>
             </section>
             <section class="wizard-step" data-personalization-step="3" hidden>
-              <h3>Write to</h3>
-              <div class="wizard-options">
-                <label><input name="agentsTarget" type="radio" value="global" /> Global AGENTS.md</label>
-                <label><input name="agentsTarget" type="radio" value="project" checked /> Project AGENTS.md: <strong id="projectAgentsPath">Loading...</strong></label>
+              <div class="wizard-section-heading">
+                <h3>Review detected patterns</h3>
+                <p>Select, edit, or ignore candidate rules before previewing AGENTS.md changes.</p>
               </div>
+              <div id="personalizationSuggestions" class="suggestion-list"></div>
             </section>
             <section class="wizard-step" data-personalization-step="4" hidden>
-              <h3>Preview Diff</h3>
+              <div class="wizard-section-heading">
+                <h3>Preview AGENTS.md changes</h3>
+                <p>Review the exact changes before writing. You can go back and adjust any rule.</p>
+              </div>
+              <div id="agentsTargetSummary" class="agents-target-summary"></div>
               <p id="agentsPreviewMeta" class="preview-meta">Generate a preview before applying changes.</p>
-              <pre id="agentsDiffPreview" class="diff-preview"></pre>
+              <div id="agentsDiffPreview" class="agents-diff-list"></div>
             </section>
           </div>
           <div class="modal-actions wizard-actions">

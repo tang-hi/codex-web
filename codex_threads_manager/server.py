@@ -1006,7 +1006,7 @@ def personalization_suggestions(index: CodexThreadIndex, metadata: ThreadMetadat
     now = time.time()
     cutoff = now - 30 * 24 * 60 * 60
 
-    if scope == "selected_thread" and not selected:
+    if scope in {"selected_thread", "selected_threads"} and not selected:
         raise ValueError("select at least one thread")
 
     records = []
@@ -1016,7 +1016,7 @@ def personalization_suggestions(index: CodexThreadIndex, metadata: ThreadMetadat
             continue
         if scope == "current_project" and project_path and record.cwd != project_path:
             continue
-        if scope == "selected_thread" and record.id not in selected:
+        if scope in {"selected_thread", "selected_threads"} and record.id not in selected:
             continue
         if scope == "last_30_days" and (record.updated_at or record.file_mtime or 0) < cutoff:
             continue
@@ -1048,7 +1048,19 @@ def derive_personalization_suggestions(records: list[object], samples: list[str]
     lowered = corpus.casefold()
     suggestions: list[dict[str, object]] = []
 
-    def add(id_: str, category: str, target: str, text: str, evidence: str) -> None:
+    def sample_match_count(pattern: str) -> int:
+        return sum(1 for sample in samples if re.search(pattern, sample.casefold()))
+
+    def add(
+        id_: str,
+        category: str,
+        target: str,
+        text: str,
+        evidence: str,
+        *,
+        confidence: str = "medium",
+        evidence_count: int = 0,
+    ) -> None:
         suggestions.append(
             {
                 "id": id_,
@@ -1056,24 +1068,38 @@ def derive_personalization_suggestions(records: list[object], samples: list[str]
                 "target": target,
                 "text": text,
                 "evidence": evidence,
+                "confidence": confidence,
+                "evidenceCount": evidence_count,
                 "selected": True,
             }
         )
 
-    if re.search(r"小步|小改|minimal|focused|不要.*重构|unrelated|不要大规模", lowered):
-        add("minimal-diffs", "Coding preferences", "global", "Prefer focused, minimal diffs and avoid unrelated refactors unless explicitly requested.", "Detected repeated requests for small scoped changes.")
-    if re.search(r"检查|验证|验收|node --check|pytest|ctest|run\\.sh|编译|测试", lowered):
-        add("verification-summary", "Review preferences", "global", "Include concise verification commands and results when finishing implementation work.", "Detected repeated emphasis on checks, builds, or acceptance.")
-    if re.search(r"前因后果|从哪里开始|解释|看代码|阅读", lowered):
-        add("explain-causally", "Learning preferences", "global", "When explaining code, start from entry points and describe the causal chain before implementation details.", "Detected code-reading and explanation-oriented threads.")
-    if "codex-web" in project_path or any(getattr(record, "cwd", "") == PROJECT_ROOT.as_posix() for record in records):
-        add("codex-web-js-check", "Project workflow", "project", "For frontend JavaScript edits, run `node --check static/app.js` before finishing.", "Current project uses a single static JavaScript entrypoint.")
-        add("codex-web-local-thread-metadata", "Project conventions", "project", "Thread rename, archive, hide, and restore are local metadata operations; do not call Codex rename, delete, or archive APIs for them.", "Detected codex-web thread-management requirements.")
-    if re.search(r"openclash|router|路由|配置|当前配置", lowered):
-        add("inspect-live-config", "Operational preferences", "global", "For router or local-machine troubleshooting, inspect live state before giving generic advice.", "Detected operational troubleshooting threads.")
+    minimal_pattern = r"小步|小改|minimal|focused|不要.*重构|unrelated|不要大规模"
+    verification_pattern = r"检查|验证|验收|node --check|pytest|ctest|run\\.sh|编译|测试"
+    explanation_pattern = r"前因后果|从哪里开始|解释|看代码|阅读"
+    ops_pattern = r"openclash|router|路由|配置|当前配置"
 
-    if not suggestions:
-        add("default-focused-work", "Coding preferences", "global", "Keep changes scoped to the requested behavior and report verification clearly.", f"Learned from {len(records)} selected threads.")
+    if re.search(minimal_pattern, lowered):
+        count = sample_match_count(minimal_pattern)
+        add("minimal-diffs", "Coding workflow", "global_agents", "Prefer focused, minimal diffs and avoid unrelated refactors unless explicitly requested.", "Detected repeated requests for small scoped changes.", confidence="high" if count >= 3 else "medium", evidence_count=count)
+    if re.search(verification_pattern, lowered):
+        count = sample_match_count(verification_pattern)
+        add("verification-summary", "Verification", "global_agents", "Include concise verification commands and results when finishing implementation work.", "Detected repeated emphasis on checks, builds, or acceptance.", confidence="high" if count >= 3 else "medium", evidence_count=count)
+    if re.search(explanation_pattern, lowered):
+        count = sample_match_count(explanation_pattern)
+        add("explain-causally", "Review style", "global_agents", "When explaining code, start from entry points and describe the causal chain before implementation details.", "Detected code-reading and explanation-oriented threads.", confidence="high" if count >= 3 else "medium", evidence_count=count)
+    if "codex-web" in project_path or any(getattr(record, "cwd", "") == PROJECT_ROOT.as_posix() for record in records):
+        js_check_pattern = r"node --check|static/app\\.js|frontend|前端|javascript"
+        thread_metadata_pattern = r"thread.*metadata|rename|archive|hide|restore|隐藏|归档|重命名|本地 metadata|local metadata"
+        if re.search(js_check_pattern, lowered):
+            count = sample_match_count(js_check_pattern)
+            add("codex-web-js-check", "Project convention", "project_agents", "For frontend JavaScript edits, run `node --check static/app.js` before finishing.", "Detected repeated codex-web frontend verification requests.", confidence="high" if count >= 2 else "medium", evidence_count=count)
+        if re.search(thread_metadata_pattern, lowered):
+            count = sample_match_count(thread_metadata_pattern)
+            add("codex-web-local-thread-metadata", "Project convention", "project_agents", "Thread rename, archive, hide, and restore are local metadata operations; do not call Codex rename, delete, or archive APIs for them.", "Detected codex-web thread-management requirements.", confidence="high" if count >= 2 else "medium", evidence_count=count)
+    if re.search(ops_pattern, lowered):
+        count = sample_match_count(ops_pattern)
+        add("inspect-live-config", "Operational preference", "global_agents", "For router or local-machine troubleshooting, inspect live state before giving generic advice.", "Detected operational troubleshooting threads.", confidence="medium", evidence_count=count)
     return suggestions
 
 
