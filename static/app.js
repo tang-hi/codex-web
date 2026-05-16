@@ -547,15 +547,35 @@ function compareThreadsRecent(left, right) {
 }
 
 function threadStatusLabel(item) {
-  if (item?.id && item.id === state.codex.threadId) return statusDisplayLabel(currentSessionStatus());
+  return threadStatusPresentation(item).label;
+}
+
+function threadStatusPresentation(item) {
   const visibility = threadVisibility(item);
-  if (visibility === "archived") return "Archived";
-  if (visibility === "hidden") return "Hidden";
-  return item?.archived ? "Codex archived" : "Ready";
+  if (visibility === "archived") return { label: "Archived", className: "archived" };
+  if (visibility === "hidden") return { label: "Hidden", className: "hidden" };
+
+  if (item?.id && item.id === state.codex.threadId) {
+    const status = currentSessionStatus();
+    return { label: statusDisplayLabel(status), className: sessionStatusClass(status) };
+  }
+
+  const runtime = item?.id ? state.codex.threadRuntime[item.id] || {} : {};
+  const runtimeStatus = normalizeThreadStatus(runtime.threadStatus || "");
+  if (runtime.active || runtime.turnId || runtimeStatus === "active") return { label: "Running", className: "working" };
+  if (["error", "failed", "failure"].includes(runtimeStatus)) return { label: "Failed", className: "error" };
+  if (["starting", "pending", "queued", "waiting"].includes(runtimeStatus)) return { label: "Waiting", className: "starting" };
+
+  if (item?.archived) return { label: "Codex archived", className: "archived" };
+  return { label: "Ready", className: "ready" };
+}
+
+function threadMetaLine(item) {
+  return [shortPath(threadProjectPath(item)) || "No directory", formatDate(threadUpdatedAt(item))].filter(Boolean).join(" · ");
 }
 
 function threadSecondaryLine(item) {
-  return [shortPath(threadProjectPath(item)) || "No directory", formatDate(threadUpdatedAt(item)), threadStatusLabel(item)]
+  return [threadMetaLine(item), threadStatusLabel(item)]
     .filter(Boolean)
     .join(" · ");
 }
@@ -622,13 +642,17 @@ function appendSidebarThreadGroup(label, groupOrItems) {
 
 function createSidebarThreadItem(item) {
   const wrapper = document.createElement("article");
-  wrapper.className = `sidebar-thread ${item.id === state.codex.threadId ? "active" : ""}`;
+  const status = threadStatusPresentation(item);
+  wrapper.className = `sidebar-thread ${item.id === state.codex.threadId ? "active" : ""} status-${safeId(status.className)}`;
   wrapper.dataset.threadId = item.id;
   wrapper.title = item.id;
   wrapper.innerHTML = `
     <button class="thread-item-main" type="button">
       <strong>${escapeHtml(threadTitle(item))}</strong>
-      <span>${escapeHtml(threadSecondaryLine(item))}</span>
+      <span class="thread-item-meta-row">
+        <span class="thread-item-meta">${escapeHtml(threadMetaLine(item))}</span>
+        <em class="thread-status-pill ${escapeAttr(status.className)}">${escapeHtml(status.label)}</em>
+      </span>
     </button>
     <button class="thread-item-menu-button" type="button" aria-haspopup="menu" aria-expanded="false" title="Thread actions">...</button>
     <div class="thread-item-menu" role="menu" hidden>
@@ -648,6 +672,26 @@ function createSidebarThreadItem(item) {
     handleLocalThreadAction(button.getAttribute("data-local-thread-action"), item.id);
   });
   return wrapper;
+}
+
+function syncSidebarThreadItemStatus(threadId) {
+  if (!threadId || !els.sidebarThreads) return;
+  const item = state.items.find((entry) => entry.id === threadId);
+  if (!item || !isSidebarVisibleThread(item)) return;
+  const node = Array.from(els.sidebarThreads.querySelectorAll(".sidebar-thread")).find((entry) => entry.dataset.threadId === threadId);
+  if (!node) {
+    renderSidebarThreads();
+    return;
+  }
+  const status = threadStatusPresentation(item);
+  node.className = `sidebar-thread ${threadId === state.codex.threadId ? "active" : ""} status-${safeId(status.className)}`;
+  const meta = node.querySelector(".thread-item-meta-row");
+  if (meta) {
+    meta.innerHTML = `
+      <span class="thread-item-meta">${escapeHtml(threadMetaLine(item))}</span>
+      <em class="thread-status-pill ${escapeAttr(status.className)}">${escapeHtml(status.label)}</em>
+    `;
+  }
 }
 
 function threadActionMenuHtml(item) {
@@ -2142,6 +2186,7 @@ function rememberThreadRuntime(method, params) {
   const existing = state.codex.threadRuntime[threadId] || {};
   const turnId = notificationTurnId(params);
   const next = { ...existing, updatedAt: Date.now() };
+  let shouldRefreshThreadList = false;
 
   if (method === "thread/status/changed") {
     const status = normalizeThreadStatus(params.status || params.thread?.status || "");
@@ -2149,15 +2194,18 @@ function rememberThreadRuntime(method, params) {
     next.threadStatusMessage = optionalText(params.statusMessage || params.status_message || params.thread?.statusMessage);
     next.active = status === "active";
     if (status !== "active") next.turnId = "";
+    shouldRefreshThreadList = true;
   }
 
   if (turnId && method !== "turn/completed" && existing.completedTurnId !== turnId) {
+    if (existing.turnId !== turnId || !existing.active) shouldRefreshThreadList = true;
     next.turnId = turnId;
     next.active = true;
     if (existing.turnId !== turnId) next.visibleOutput = false;
   }
 
   if (method === "turn/completed") {
+    shouldRefreshThreadList = true;
     if (!turnId || !existing.turnId || existing.turnId === turnId) {
       next.turnId = "";
       next.active = false;
@@ -2167,6 +2215,11 @@ function rememberThreadRuntime(method, params) {
   }
 
   state.codex.threadRuntime[threadId] = next;
+  if (shouldRefreshThreadList) {
+    syncSidebarThreadItemStatus(threadId);
+    renderThreadManager();
+    renderPersonalizationThreadPicker();
+  }
 }
 
 function markVisibleThreadWorking(method, params) {
@@ -4094,7 +4147,8 @@ function updateThreadStatus(params) {
 }
 
 function normalizeThreadStatus(status) {
-  return typeof status === "object" && status ? status.type || status.status || "" : String(status || "");
+  const value = typeof status === "object" && status ? status.type || status.status || "" : status;
+  return String(value || "").trim().toLowerCase();
 }
 
 function resetHistoryPaging(threadId = null) {
@@ -4609,6 +4663,7 @@ function setCodexStatus(text) {
 function setChatActivity(text) {
   state.codex.activity = text || "";
   renderChatThreadLine();
+  syncSidebarThreadItemStatus(state.codex.threadId);
   renderChatStatus();
 }
 

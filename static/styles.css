@@ -905,11 +905,95 @@ tbody tr:last-child td {
   white-space: normal;
 }
 
+.thread-item-meta-row {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.thread-item-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .sidebar-thread span,
 .sidebar-thread em {
   color: var(--muted);
   font-size: 11px;
   font-style: normal;
+}
+
+.thread-status-pill {
+  align-items: center;
+  border: 1px solid #d7dee8;
+  border-radius: 999px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 10px !important;
+  font-weight: 760;
+  gap: 4px;
+  line-height: 1;
+  min-height: 18px;
+  padding: 0 6px;
+}
+
+.thread-status-pill::before {
+  background: #94a3b8;
+  border-radius: 999px;
+  content: "";
+  height: 6px;
+  width: 6px;
+}
+
+.thread-status-pill.ready {
+  background: var(--success-soft);
+  border-color: #b9dfc1;
+  color: var(--success);
+}
+
+.thread-status-pill.ready::before {
+  background: var(--success);
+}
+
+.thread-status-pill.working {
+  background: var(--accent-soft);
+  border-color: #bfd5f4;
+  color: var(--accent);
+}
+
+.thread-status-pill.working::before {
+  animation: working-pulse 900ms ease-in-out infinite;
+  background: var(--accent);
+}
+
+.thread-status-pill.starting {
+  background: var(--warning-soft);
+  border-color: #f1d18a;
+  color: var(--warning);
+}
+
+.thread-status-pill.starting::before {
+  background: #d99719;
+}
+
+.thread-status-pill.error {
+  background: var(--danger-soft);
+  border-color: #f4b6ad;
+  color: var(--danger);
+}
+
+.thread-status-pill.error::before {
+  background: var(--danger);
+}
+
+.thread-status-pill.archived,
+.thread-status-pill.hidden {
+  background: var(--surface-soft);
+  color: var(--muted);
 }
 
 .chat-title-line {
@@ -927,26 +1011,34 @@ tbody tr:last-child td {
 }
 
 .title-action {
+  background: #f8fafc;
+  border-color: #d7dee8;
   border-radius: 999px;
+  color: #526579;
   font-size: 13px;
   height: 28px;
   min-height: 28px;
-  opacity: 0;
+  opacity: 1;
   padding: 0;
   transition:
     background 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
     opacity 140ms ease;
   width: 28px;
 }
 
-.chat-title-line:hover .title-action,
-.title-action:focus-visible,
-.title-action[aria-expanded="true"] {
-  opacity: 1;
+.title-action:not(:disabled):hover,
+.title-action:focus-visible {
+  background: var(--accent-soft);
+  border-color: #bfd5f4;
+  color: var(--accent);
 }
 
 .title-action:disabled {
-  opacity: 0;
+  background: transparent;
+  border-color: transparent;
+  opacity: 0.28;
 }
 
 .chat-cwd-line {
