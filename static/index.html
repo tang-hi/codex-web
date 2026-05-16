@@ -31,105 +31,46 @@
         </div>
       </header>
 
-      <nav class="tabbar" aria-label="Primary">
-        <button class="tab-button" id="threadsTabButton" type="button" data-tab="threads">Threads</button>
-        <button class="tab-button active" id="chatTabButton" type="button" data-tab="chat">Web Chat</button>
-      </nav>
-
-      <main class="layout tab-panel" id="threadsTab" hidden>
-        <section class="content">
-          <div class="view-header">
-            <h2>Threads</h2>
-            <button id="rebuildButton" type="button">Rebuild Index</button>
-          </div>
-          <div class="stats" id="stats"></div>
-
-          <form class="toolbar" id="filters">
-            <label class="search-field">
-              <span>Search</span>
-              <input id="q" name="q" type="search" placeholder="title, cwd, id, branch..." autocomplete="off" />
-            </label>
-            <label>
-              <span>Status</span>
-              <select id="archived" name="archived">
-                <option value="active">Active</option>
-                <option value="archived">Archived</option>
-                <option value="all">All</option>
-              </select>
-            </label>
-            <label>
-              <span>Source</span>
-              <select id="source" name="source">
-                <option value="">All sources</option>
-              </select>
-            </label>
-            <label>
-              <span>CWD</span>
-              <select id="cwd" name="cwd">
-                <option value="">All directories</option>
-              </select>
-            </label>
-            <label>
-              <span>Sort</span>
-              <select id="sort" name="sort">
-                <option value="updatedAt">Updated</option>
-                <option value="createdAt">Created</option>
-                <option value="fileSize">File size</option>
-                <option value="cwd">CWD</option>
-                <option value="source">Source</option>
-                <option value="title">Title</option>
-              </select>
-            </label>
-          </form>
-
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Thread</th>
-                  <th>Updated</th>
-                  <th>CWD</th>
-                  <th>Source</th>
-                  <th>Size</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody id="threadRows"></tbody>
-            </table>
-          </div>
-          <div class="empty" id="emptyState" hidden>No threads found.</div>
-        </section>
-
-        <aside class="details" id="details">
-          <div class="details-empty">Select a thread to inspect it.</div>
-        </aside>
-      </main>
-
       <main class="chat-page tab-panel active" id="chatTab">
-        <div class="chat-workbench">
-          <aside class="chat-sidebar thread-sidebar" aria-label="Recent sessions">
-            <div class="sidebar-section">
-              <div class="sidebar-heading">
-                <h3>Sessions</h3>
-                <span id="sidebarThreadCount" class="count-badge">0</span>
+        <div class="chat-workbench details-open">
+          <aside class="chat-sidebar thread-sidebar" aria-label="Thread navigator">
+            <div class="thread-navigator">
+              <div class="thread-nav-header">
+                <div>
+                  <h3>Sessions</h3>
+                  <span id="sidebarThreadCount" class="count-badge">0</span>
+                </div>
+                <button id="sidebarNewThread" class="button-ghost compact-button" type="button">New</button>
               </div>
+              <label class="thread-search">
+                <span class="sr-only">Search active threads</span>
+                <input id="sidebarThreadSearch" type="search" placeholder="Search active threads..." autocomplete="off" />
+              </label>
               <div class="sidebar-thread-list" id="sidebarThreads"></div>
+              <div class="thread-sidebar-actions">
+                <button id="openThreadManager" class="button-ghost" type="button">Manage threads</button>
+                <button id="openPersonalization" class="button-ghost" type="button">Personalize Codex</button>
+              </div>
             </div>
           </aside>
 
           <section class="codex-chat" id="codexChat">
           <div class="chat-header">
             <div class="chat-title">
-              <h2>Codex Chat</h2>
+              <div class="chat-title-line">
+                <h2 id="chatThreadTitle">New thread</h2>
+                <button id="chatHeaderRename" class="icon-button title-action" type="button" title="Rename thread" disabled>Rename</button>
+              </div>
               <div class="chat-summary-line" id="chatSummaryLine">
                 <span id="chatPrimaryStatus">Idle</span>
                 <span id="chatPrimaryContext">Context waiting</span>
                 <span id="chatPrimaryModel">Loading...</span>
+                <span id="chatPrimaryCwd">No directory</span>
               </div>
             </div>
             <div class="chat-actions">
               <button id="newCodexThread" class="button-secondary" type="button">New Thread</button>
-              <button id="detailsToggle" class="button-ghost" type="button" aria-expanded="false">Details</button>
+              <button id="detailsToggle" class="button-ghost" type="button" aria-expanded="true">Hide details</button>
               <button id="interruptCodexTurn" class="button-danger" type="button" disabled hidden>Interrupt</button>
             </div>
           </div>
@@ -163,6 +104,7 @@
                       <button type="button" data-thread-action="rollback" role="menuitem">Rollback last turn</button>
                       <button type="button" data-thread-action="rename" role="menuitem">Rename thread</button>
                       <button type="button" data-thread-action="archive" role="menuitem">Archive thread</button>
+                      <button type="button" data-thread-action="hide" role="menuitem">Hide from sidebar</button>
                       <button type="button" data-thread-action="shell" role="menuitem">Shell command</button>
                     </div>
                   </div>
@@ -182,88 +124,123 @@
           </form>
           </section>
 
-          <aside class="chat-sidebar activity-sidebar" id="activitySidebar" aria-label="Session details">
-            <div class="sidebar-section session-details">
-              <div class="sidebar-heading">
-                <h3>Session Details</h3>
-              </div>
-              <div class="activity-card">
-                <strong id="sidebarTaskStatus">Idle</strong>
-                <span id="sidebarTaskMeta">No active thread</span>
-              </div>
-              <div class="details-stack">
-                <div class="thread-line">
-                  <span id="chatThread">No active thread</span>
-                  <button id="copyThreadId" class="icon-button" type="button" title="Copy thread ID" disabled>Copy</button>
+          <aside class="chat-sidebar activity-sidebar" id="activitySidebar" aria-label="Details inspector">
+            <div class="inspector-shell">
+              <div class="inspector-header">
+                <div>
+                  <h3>Details</h3>
+                  <p id="sidebarTaskMeta">No active thread</p>
                 </div>
-                <div class="resume-action">
-                  <button id="resumeMenuButton" class="button-ghost" type="button" aria-haspopup="dialog" aria-expanded="false">Resume thread</button>
-                  <div id="resumePopover" class="resume-popover" hidden>
-                    <input id="resumeThreadId" type="text" placeholder="Thread ID..." autocomplete="off" />
-                    <button id="resumeCodexThread" type="button">Confirm</button>
+                <strong id="sidebarTaskStatus" class="session-pill idle">Idle</strong>
+              </div>
+              <div class="inspector-tabs" role="tablist" aria-label="Details inspector tabs">
+                <button class="active" type="button" role="tab" aria-selected="true" data-details-tab="overview">Overview</button>
+                <button type="button" role="tab" aria-selected="false" data-details-tab="context">Context</button>
+                <button type="button" role="tab" aria-selected="false" data-details-tab="files">Files</button>
+                <button type="button" role="tab" aria-selected="false" data-details-tab="config">Config</button>
+              </div>
+
+              <section class="inspector-panel active" id="detailsPanelOverview" data-details-panel="overview">
+                <div class="details-stack compact-details">
+                  <div class="detail-row">
+                    <span>Status</span>
+                    <strong id="overviewStatus">Idle</strong>
+                  </div>
+                  <div class="detail-row thread-line">
+                    <span>Thread</span>
+                    <strong id="chatThread">No active thread</strong>
+                    <button id="copyThreadId" class="icon-button" type="button" title="Copy thread ID" disabled>Copy</button>
+                  </div>
+                  <div class="resume-action">
+                    <button id="resumeMenuButton" class="button-ghost" type="button" aria-haspopup="dialog" aria-expanded="false">Resume thread</button>
+                    <div id="resumePopover" class="resume-popover" hidden>
+                      <input id="resumeThreadId" type="text" placeholder="Thread ID..." autocomplete="off" />
+                      <button id="resumeCodexThread" type="button">Confirm</button>
+                    </div>
+                  </div>
+                  <div class="inline-meter" title="Waiting for Codex token usage data after the first turn.">
+                    <span class="meter-fill" id="chatContextBar"></span>
+                    <strong id="chatContextValue">Context waiting</strong>
+                    <small id="chatContextMeta"></small>
+                  </div>
+                  <div class="inline-meter">
+                    <span class="meter-fill" id="chatLimitBar"></span>
+                    <strong id="chatLimitValue">5h waiting</strong>
+                    <small id="chatLimitMeta"></small>
+                  </div>
+                  <div class="detail-row">
+                    <span>Changed files</span>
+                    <strong id="sidebarChangedCount">0</strong>
+                  </div>
+                  <div class="sidebar-list" id="sidebarChangedFiles">
+                    <span class="sidebar-empty">No file changes yet.</span>
+                  </div>
+                  <div class="detail-row">
+                    <span>Running command</span>
+                  </div>
+                  <div class="sidebar-mono" id="sidebarRunningCommand">None</div>
+                </div>
+              </section>
+
+              <section class="inspector-panel" id="detailsPanelContext" data-details-panel="context" hidden>
+                <div class="context-panel">
+                  <div class="context-usage">
+                    <span>Context usage</span>
+                    <strong id="contextUsageValue">Unavailable</strong>
+                  </div>
+                  <div class="context-stacked-bar" id="contextStackedBar"></div>
+                  <div id="contextBreakdownEmpty" class="details-empty compact-empty">Context breakdown unavailable<br />Token attribution is not available for this thread yet.</div>
+                  <div class="context-section">
+                    <h4>Largest context contributors</h4>
+                    <div id="contextLargestContributors" class="context-list"></div>
+                  </div>
+                  <div class="context-section">
+                    <h4>Suggestions</h4>
+                    <div id="contextSuggestions" class="context-list"></div>
                   </div>
                 </div>
-                <div class="inline-meter" title="Waiting for Codex token usage data after the first turn.">
-                  <span class="meter-fill" id="chatContextBar"></span>
-                  <strong id="chatContextValue">Context waiting</strong>
-                  <small id="chatContextMeta"></small>
-                </div>
-                <div class="inline-meter">
-                  <span class="meter-fill" id="chatLimitBar"></span>
-                  <strong id="chatLimitValue">5h waiting</strong>
-                  <small id="chatLimitMeta"></small>
-                </div>
-              </div>
-            </div>
+              </section>
 
-            <div class="sidebar-section">
-              <div class="sidebar-heading">
-                <h3>Configuration</h3>
-              </div>
-              <div class="inspector-controls">
-                <div class="choice-control cwd-control">
-                  <input id="chatCwd" type="hidden" />
-                  <button id="chatCwdButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
-                    <strong>Loading...</strong>
-                  </button>
-                  <div id="chatCwdMenu" class="choice-menu" role="menu" hidden></div>
+              <section class="inspector-panel" id="detailsPanelFiles" data-details-panel="files" hidden>
+                <div class="sidebar-heading inline-heading">
+                  <h3>Changed Files</h3>
+                  <span id="inspectorFilesCount">0</span>
                 </div>
-                <input id="chatModel" type="hidden" />
-                <input id="chatEffort" type="hidden" />
-                <div class="choice-control model-control">
-                  <button id="chatModelButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
-                    <strong>Loading...</strong>
-                  </button>
-                  <div id="chatModelMenu" class="choice-menu" role="menu" hidden></div>
+                <div class="sidebar-list" id="inspectorFilesList">
+                  <span class="sidebar-empty">No file changes yet.</span>
                 </div>
-                <div class="choice-control compact">
-                  <button id="chatEffortButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
-                    <strong>Reasoning default</strong>
-                  </button>
-                  <div id="chatEffortMenu" class="choice-menu" role="menu" hidden></div>
-                </div>
-                <label class="fast-toggle">
-                  <input id="chatFastMode" type="checkbox" />
-                  <span id="chatFastLabel">Fast mode: Off</span>
-                </label>
-              </div>
-            </div>
+              </section>
 
-            <div class="sidebar-section">
-              <div class="sidebar-heading">
-                <h3>Changed Files</h3>
-                <span id="sidebarChangedCount">0</span>
-              </div>
-              <div class="sidebar-list" id="sidebarChangedFiles">
-                <span class="sidebar-empty">No file changes yet.</span>
-              </div>
-            </div>
-
-            <div class="sidebar-section">
-              <div class="sidebar-heading">
-                <h3>Running Command</h3>
-              </div>
-              <div class="sidebar-mono" id="sidebarRunningCommand">None</div>
+              <section class="inspector-panel" id="detailsPanelConfig" data-details-panel="config" hidden>
+                <div class="inspector-controls">
+                  <div class="choice-control cwd-control">
+                    <input id="chatCwd" type="hidden" />
+                    <button id="chatCwdButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
+                      <strong>Loading...</strong>
+                    </button>
+                    <div id="chatCwdMenu" class="choice-menu" role="menu" hidden></div>
+                  </div>
+                  <input id="chatModel" type="hidden" />
+                  <input id="chatEffort" type="hidden" />
+                  <div class="choice-control model-control">
+                    <button id="chatModelButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
+                      <strong>Loading...</strong>
+                    </button>
+                    <div id="chatModelMenu" class="choice-menu" role="menu" hidden></div>
+                  </div>
+                  <div class="choice-control compact">
+                    <button id="chatEffortButton" class="choice-button" type="button" aria-haspopup="menu" aria-expanded="false">
+                      <strong>Reasoning default</strong>
+                    </button>
+                    <div id="chatEffortMenu" class="choice-menu" role="menu" hidden></div>
+                  </div>
+                  <label class="fast-toggle">
+                    <input id="chatFastMode" type="checkbox" />
+                    <span id="chatFastLabel">Fast mode: Off</span>
+                  </label>
+                  <button id="openPersonalizationFromConfig" class="button-ghost full-width-button" type="button">Personalize Codex</button>
+                </div>
+              </section>
             </div>
 
             <span id="chatSessionValue" class="sr-only">Idle</span>
@@ -329,6 +306,136 @@
           </div>
         </section>
       </div>
+
+      <div class="modal-backdrop" id="renameThreadModal" hidden>
+        <section class="modal-panel rename-panel" role="dialog" aria-modal="true" aria-labelledby="renameThreadTitle">
+          <div class="modal-header">
+            <div>
+              <h2 id="renameThreadTitle">Rename Thread</h2>
+              <p>Local display name only</p>
+            </div>
+            <button id="closeRenameThreadModal" class="icon-button" type="button" aria-label="Close">Close</button>
+          </div>
+          <div class="modal-body">
+            <label class="modal-field stacked">
+              <span>Display name</span>
+              <input id="renameThreadInput" type="text" autocomplete="off" />
+            </label>
+          </div>
+          <div class="modal-actions">
+            <button id="cancelRenameThread" class="button-ghost" type="button">Cancel</button>
+            <button id="confirmRenameThread" class="button-primary" type="button">Save</button>
+          </div>
+        </section>
+      </div>
+
+      <div class="modal-backdrop drawer-backdrop" id="threadManagerModal" hidden>
+        <section class="modal-panel drawer-panel thread-manager-panel" role="dialog" aria-modal="true" aria-labelledby="threadManagerTitle">
+          <div class="modal-header">
+            <div>
+              <h2 id="threadManagerTitle">Manage threads</h2>
+              <p>Local visibility and display metadata</p>
+            </div>
+            <button id="closeThreadManager" class="icon-button" type="button" aria-label="Close">Close</button>
+          </div>
+          <div class="modal-body manager-body">
+            <div class="manager-toolbar">
+              <label class="search-field compact-search">
+                <span>Search</span>
+                <input id="threadManagerSearch" type="search" placeholder="Search all threads..." autocomplete="off" />
+              </label>
+              <div class="segmented-control" aria-label="Thread visibility scope">
+                <button class="active" type="button" data-manager-scope="active">Active</button>
+                <button type="button" data-manager-scope="archived">Archived</button>
+                <button type="button" data-manager-scope="hidden">Hidden</button>
+                <button type="button" data-manager-scope="all">All</button>
+              </div>
+              <label>
+                <span>Project</span>
+                <select id="threadManagerProject"></select>
+              </label>
+              <label>
+                <span>Sort</span>
+                <select id="threadManagerSort">
+                  <option value="recent">Recent</option>
+                  <option value="title">Title</option>
+                  <option value="project">Project</option>
+                </select>
+              </label>
+            </div>
+            <div class="manager-bulkbar" id="threadManagerBulkbar">
+              <label><input id="threadManagerSelectAll" type="checkbox" /> Select visible</label>
+              <span id="threadManagerSelectedCount">0 selected</span>
+              <button id="bulkRestoreThreads" type="button">Restore to sidebar</button>
+              <button id="bulkArchiveThreads" type="button">Archive</button>
+              <button id="bulkHideThreads" type="button">Hide from sidebar</button>
+            </div>
+            <div id="threadManagerResults" class="manager-results"></div>
+          </div>
+        </section>
+      </div>
+
+      <div class="modal-backdrop drawer-backdrop" id="personalizationModal" hidden>
+        <section class="modal-panel drawer-panel personalization-panel" role="dialog" aria-modal="true" aria-labelledby="personalizationTitle">
+          <div class="modal-header">
+            <div>
+              <h2 id="personalizationTitle">Personalize Codex</h2>
+              <p id="personalizationSubtitle">Learn from past threads</p>
+            </div>
+            <button id="closePersonalization" class="icon-button" type="button" aria-label="Close">Close</button>
+          </div>
+          <div class="modal-body wizard-body">
+            <div class="wizard-steps" id="personalizationSteps"></div>
+            <section class="wizard-step active" data-personalization-step="1">
+              <h3>Learn from past threads</h3>
+              <div class="wizard-options">
+                <label><input name="personalizationScope" type="radio" value="current_project" checked /> Current project only: <strong id="personalizationProjectLabel">Current project</strong></label>
+                <label><input name="personalizationScope" type="radio" value="all_projects" /> All projects</label>
+                <label><input name="personalizationScope" type="radio" value="selected_thread" /> Selected threads</label>
+                <label><input name="personalizationScope" type="radio" value="last_30_days" /> Last 30 days</label>
+              </div>
+              <div class="thread-picker" id="personalizationThreadPicker" hidden>
+                <label class="search-field compact-search">
+                  <span>Selected threads</span>
+                  <input id="personalizationThreadSearch" type="search" placeholder="Search threads to include..." autocomplete="off" />
+                </label>
+                <div class="thread-picker-list" id="personalizationThreadList"></div>
+              </div>
+              <h3>Include</h3>
+              <div class="wizard-options inline-options">
+                <label><input id="personalizationIncludeActive" type="checkbox" checked /> Active threads</label>
+                <label><input id="personalizationIncludeArchived" type="checkbox" checked /> Archived threads</label>
+                <label><input id="personalizationIncludeHidden" type="checkbox" /> Hidden threads</label>
+              </div>
+            </section>
+            <section class="wizard-step" data-personalization-step="2" hidden>
+              <h3>Detected patterns</h3>
+              <div id="personalizationSuggestions" class="suggestion-list"></div>
+            </section>
+            <section class="wizard-step" data-personalization-step="3" hidden>
+              <h3>Write to</h3>
+              <div class="wizard-options">
+                <label><input name="agentsTarget" type="radio" value="global" /> Global AGENTS.md</label>
+                <label><input name="agentsTarget" type="radio" value="project" checked /> Project AGENTS.md: <strong id="projectAgentsPath">Loading...</strong></label>
+              </div>
+            </section>
+            <section class="wizard-step" data-personalization-step="4" hidden>
+              <h3>Preview Diff</h3>
+              <p id="agentsPreviewMeta" class="preview-meta">Generate a preview before applying changes.</p>
+              <pre id="agentsDiffPreview" class="diff-preview"></pre>
+            </section>
+          </div>
+          <div class="modal-actions wizard-actions">
+            <button id="cancelPersonalization" class="button-ghost" type="button">Cancel</button>
+            <button id="personalizationBack" class="button-ghost" type="button">Back</button>
+            <button id="personalizationSaveDraft" class="button-ghost" type="button" hidden>Save draft</button>
+            <button id="personalizationNext" class="button-primary" type="button">Next</button>
+            <button id="personalizationApply" class="button-primary" type="button" hidden disabled>Apply changes</button>
+          </div>
+        </section>
+      </div>
+
+      <div id="toastRegion" class="toast-region" aria-live="polite"></div>
     </div>
 
     <script src="/vendor/markdown-it.min.js"></script>

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import mimetypes
 import queue
+import re
 import sys
 import time
 from http import HTTPStatus
@@ -23,6 +25,7 @@ STATIC_ROOT = PROJECT_ROOT / "static"
 class ThreadManagerHandler(BaseHTTPRequestHandler):
     index: CodexThreadIndex
     bridge: CodexBridge
+    metadata: "ThreadMetadataStore"
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -40,6 +43,10 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/codex/rate-limits":
             self.handle_codex_rate_limits()
+            return
+
+        if parsed.path == "/api/thread-metadata":
+            self.send_json({"metadata": self.metadata.all()})
             return
 
         if parsed.path == "/api/codex/events":
@@ -66,6 +73,11 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if parsed.path.startswith("/api/threads/") and parsed.path.endswith("/context"):
+            thread_id = unquote(parsed.path.removeprefix("/api/threads/").removesuffix("/context").rstrip("/"))
+            self.send_json(context_breakdown_for_thread(self.index, thread_id))
+            return
+
         if parsed.path.startswith("/api/threads/"):
             thread_id = unquote(parsed.path.removeprefix("/api/threads/"))
             thread = self.index.get_thread(thread_id)
@@ -82,6 +94,22 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/index/rebuild":
             self.index.rebuild()
             self.send_json(self.index.stats())
+            return
+
+        if parsed.path == "/api/agents/preview":
+            self.handle_agents_preview()
+            return
+
+        if parsed.path == "/api/agents/apply":
+            self.handle_agents_apply()
+            return
+
+        if parsed.path == "/api/personalization/suggestions":
+            self.handle_personalization_suggestions()
+            return
+
+        if parsed.path.startswith("/api/thread-metadata/"):
+            self.handle_thread_metadata_update(unquote(parsed.path.removeprefix("/api/thread-metadata/")))
             return
 
         if parsed.path == "/api/codex/start":
@@ -122,14 +150,6 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/codex/rollback":
             self.handle_codex_rollback()
-            return
-
-        if parsed.path == "/api/codex/archive":
-            self.handle_codex_archive()
-            return
-
-        if parsed.path == "/api/codex/rename":
-            self.handle_codex_rename()
             return
 
         if parsed.path == "/api/codex/shell-command":
@@ -330,22 +350,6 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
         except (CodexBridgeError, ValueError) as exc:
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
 
-    def handle_codex_archive(self) -> None:
-        try:
-            body = self.read_json_body()
-            result = self.bridge.archive_thread(required_str(body, "threadId"))
-            self.send_json(result)
-        except (CodexBridgeError, ValueError) as exc:
-            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
-
-    def handle_codex_rename(self) -> None:
-        try:
-            body = self.read_json_body()
-            result = self.bridge.rename_thread(required_str(body, "threadId"), required_str(body, "name"))
-            self.send_json(result)
-        except (CodexBridgeError, ValueError) as exc:
-            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
-
     def handle_codex_shell_command(self) -> None:
         try:
             body = self.read_json_body()
@@ -364,6 +368,59 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
             self.bridge.respond_to_server_request(request_id, decision)
             self.send_json({"ok": True})
         except (CodexBridgeError, ValueError) as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_agents_preview(self) -> None:
+        try:
+            body = self.read_json_body()
+            target_path = self.resolve_agents_target(required_str(body, "target"))
+            entries = parse_agents_entries(body.get("entries"))
+            current = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
+            proposed = build_agents_document(current, entries)
+            self.send_json(
+                {
+                    "targetPath": str(target_path),
+                    "exists": target_path.exists(),
+                    "diff": unified_text_diff(current, proposed, target_path),
+                    "proposed": proposed,
+                }
+            )
+        except (OSError, ValueError) as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_agents_apply(self) -> None:
+        try:
+            body = self.read_json_body()
+            target_path = self.resolve_agents_target(required_str(body, "target"))
+            entries = parse_agents_entries(body.get("entries"))
+            current = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
+            proposed = build_agents_document(current, entries)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(proposed, encoding="utf-8")
+            self.send_json({"ok": True, "targetPath": str(target_path)})
+        except (OSError, ValueError) as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def resolve_agents_target(self, target: str) -> Path:
+        if target == "project":
+            return PROJECT_ROOT / "AGENTS.md"
+        if target == "global":
+            return self.index.codex_home / "AGENTS.md"
+        raise ValueError("target must be project or global")
+
+    def handle_thread_metadata_update(self, thread_id: str) -> None:
+        try:
+            body = self.read_json_body()
+            self.send_json({"metadata": self.metadata.update(thread_id, body)})
+        except ValueError as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
+
+    def handle_personalization_suggestions(self) -> None:
+        try:
+            body = self.read_json_body()
+            suggestions = personalization_suggestions(self.index, self.metadata, body)
+            self.send_json({"suggestions": suggestions})
+        except ValueError as exc:
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
 
     def read_json_body(self) -> dict[str, object]:
@@ -452,6 +509,418 @@ def first(query: dict[str, list[str]], key: str) -> str | None:
     return value or None
 
 
+AGENTS_MANAGED_START = "<!-- codex-web-managed:start -->"
+AGENTS_MANAGED_END = "<!-- codex-web-managed:end -->"
+THREAD_VISIBILITIES = {"active", "archived", "hidden"}
+
+
+class ThreadMetadataStore:
+    def __init__(self, path: Path):
+        self.path = path.expanduser()
+
+    def all(self) -> dict[str, dict[str, object]]:
+        return self._read()
+
+    def update(self, thread_id: str, patch: dict[str, object]) -> dict[str, object]:
+        thread_id = optional_str(thread_id)
+        if not thread_id:
+            raise ValueError("thread id is required")
+        if not isinstance(patch, dict):
+            raise ValueError("metadata patch must be an object")
+
+        data = self._read()
+        existing = data.get(thread_id, {"threadId": thread_id, "visibility": "active"})
+        next_value = normalize_thread_metadata({**existing, **patch, "threadId": thread_id})
+        data[thread_id] = next_value
+        self._write(data)
+        return next_value
+
+    def visibility(self, thread_id: str) -> str:
+        value = self._read().get(thread_id, {})
+        visibility = value.get("visibility")
+        return visibility if visibility in THREAD_VISIBILITIES else "active"
+
+    def _read(self) -> dict[str, dict[str, object]]:
+        try:
+            raw = self.path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {}
+        except OSError:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        result: dict[str, dict[str, object]] = {}
+        for thread_id, value in parsed.items():
+            if isinstance(thread_id, str) and isinstance(value, dict):
+                result[thread_id] = normalize_thread_metadata({**value, "threadId": thread_id})
+        return result
+
+    def _write(self, data: dict[str, dict[str, object]]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def normalize_thread_metadata(value: dict[str, object]) -> dict[str, object]:
+    thread_id = optional_str(value.get("threadId")) or ""
+    visibility = optional_str(value.get("visibility")) or "active"
+    if visibility not in THREAD_VISIBILITIES:
+        visibility = "active"
+
+    result: dict[str, object] = {
+        "threadId": thread_id,
+        "visibility": visibility,
+    }
+    for key in ["displayName", "projectPath", "createdAt", "updatedAt", "lastOpenedAt"]:
+        text = optional_str(value.get(key))
+        if text:
+            result[key] = text
+    if "pinned" in value:
+        result["pinned"] = bool(value.get("pinned"))
+    return result
+
+
+def parse_agents_entries(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        raise ValueError("entries must be a list")
+
+    entries: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        text = optional_str(item.get("text"))
+        if not text:
+            continue
+        category = optional_str(item.get("category")) or "Preferences"
+        entries.append({"category": category, "text": text})
+
+    if not entries:
+        raise ValueError("entries must include at least one selected suggestion")
+    return entries
+
+
+def build_agents_document(current: str, entries: list[dict[str, str]]) -> str:
+    block = build_agents_managed_block(entries)
+    if AGENTS_MANAGED_START in current and AGENTS_MANAGED_END in current:
+        before, rest = current.split(AGENTS_MANAGED_START, 1)
+        _old, after = rest.split(AGENTS_MANAGED_END, 1)
+        return f"{before}{block}{after.lstrip(chr(10))}"
+
+    prefix = current.rstrip()
+    if prefix:
+        return f"{prefix}\n\n{block}\n"
+    return f"{block}\n"
+
+
+def build_agents_managed_block(entries: list[dict[str, str]]) -> str:
+    grouped: dict[str, list[str]] = {}
+    for item in entries:
+        grouped.setdefault(item["category"], []).append(item["text"])
+
+    lines = [
+        AGENTS_MANAGED_START,
+        "## Codex Web Suggestions",
+        "",
+    ]
+    for category, values in grouped.items():
+        lines.append(f"### {category}")
+        for value in values:
+            lines.append(f"- {value}")
+        lines.append("")
+    lines.append(AGENTS_MANAGED_END)
+    return "\n".join(lines)
+
+
+def unified_text_diff(current: str, proposed: str, target_path: Path) -> str:
+    current_lines = current.splitlines(keepends=True)
+    proposed_lines = proposed.splitlines(keepends=True)
+    return "".join(
+        difflib.unified_diff(
+            current_lines,
+            proposed_lines,
+            fromfile=f"a/{target_path.name}",
+            tofile=f"b/{target_path.name}",
+        )
+    )
+
+
+def context_breakdown_for_thread(index: CodexThreadIndex, thread_id: str) -> dict[str, object]:
+    record = index.records.get(thread_id)
+    if not record or not record.rollout_path:
+        return {"items": [], "contributors": [], "suggestions": [], "totalTokens": 0, "estimated": True}
+
+    path = Path(record.rollout_path).expanduser()
+    buckets: dict[str, dict[str, object]] = {}
+    contributors: list[dict[str, object]] = []
+    bytes_read = 0
+
+    def add(category: str, label: str, text: str, source: str = "") -> None:
+        clean = text.strip()
+        if not clean:
+            return
+        tokens = estimate_tokens(clean)
+        bucket = buckets.setdefault(
+            category,
+            {
+                "id": category,
+                "category": category,
+                "label": context_category_label(category),
+                "tokens": 0,
+                "source": "",
+            },
+        )
+        bucket["tokens"] = int(bucket["tokens"]) + tokens
+        contributors.append(
+            {
+                "id": f"{category}-{len(contributors)}",
+                "category": category,
+                "label": label,
+                "tokens": tokens,
+                "source": source,
+            }
+        )
+
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line_no, line in enumerate(handle):
+                bytes_read += len(line.encode("utf-8", errors="ignore"))
+                if line_no >= 5000 or bytes_read > 8 * 1024 * 1024:
+                    break
+                event = parse_json_line(line)
+                if not event:
+                    continue
+                add_context_event(event, add)
+    except OSError:
+        return {"items": [], "contributors": [], "suggestions": [], "totalTokens": 0, "estimated": True}
+
+    total = sum(int(item["tokens"]) for item in buckets.values())
+    items = []
+    for item in buckets.values():
+        tokens = int(item["tokens"])
+        items.append({**item, "percentage": (tokens / total * 100) if total else 0})
+    items.sort(key=lambda item: int(item["tokens"]), reverse=True)
+    contributors.sort(key=lambda item: int(item["tokens"]), reverse=True)
+    return {
+        "items": items,
+        "contributors": contributors[:12],
+        "suggestions": context_suggestions(items),
+        "totalTokens": total,
+        "estimated": True,
+    }
+
+
+def add_context_event(event: dict[str, object], add: object) -> None:
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    event_type = optional_str(event.get("type"))
+    payload_type = optional_str(payload.get("type"))
+
+    if event_type == "session_meta":
+        base = payload.get("base_instructions")
+        if isinstance(base, dict):
+            add("system", "System prompt", optional_str(base.get("text")) or "", "session_meta.base_instructions")
+        for key, label in [
+            ("developer_instructions", "Developer instructions"),
+            ("instructions", "Developer instructions"),
+        ]:
+            value = payload.get(key)
+            if isinstance(value, dict):
+                add("developer", label, optional_str(value.get("text")) or "", f"session_meta.{key}")
+            else:
+                add("developer", label, optional_str(value) or "", f"session_meta.{key}")
+        return
+
+    if event_type == "event_msg" and payload.get("type") == "user_message":
+        add("user_messages", "User message", optional_str(payload.get("message")) or "", "event_msg")
+        return
+
+    if event_type != "response_item":
+        return
+
+    if payload_type == "message":
+        role = optional_str(payload.get("role")) or "message"
+        text = text_from_any_content(payload.get("content"))
+        if role == "user" and is_agents_context(text):
+            add("agents", "Project AGENTS.md", text, "response_item.message")
+        elif role == "user":
+            add("user_messages", "User message", text, "response_item.message")
+        elif role == "assistant":
+            add("assistant_messages", "Assistant reply", text, "response_item.message")
+        return
+
+    if payload_type in {"function_call_output", "commandExecution", "mcpToolCall", "dynamicToolCall"}:
+        add("tool_outputs", tool_output_label(payload), text_from_payload(payload), f"response_item.{payload_type}")
+        return
+
+    if payload_type in {"fileChange", "patch", "diff"}:
+        add("diffs", "File diff", text_from_payload(payload), f"response_item.{payload_type}")
+
+
+def context_category_label(category: str) -> str:
+    labels = {
+        "system": "System / Developer",
+        "developer": "System / Developer",
+        "agents": "AGENTS.md",
+        "user_messages": "User messages",
+        "assistant_messages": "Assistant replies",
+        "tool_outputs": "Tool outputs",
+        "files": "Files / diffs",
+        "diffs": "Files / diffs",
+        "other": "Other",
+    }
+    return labels.get(category, category)
+
+
+def context_suggestions(items: list[dict[str, object]]) -> list[str]:
+    by_category = {str(item["category"]): float(item.get("percentage") or 0) for item in items}
+    suggestions: list[str] = []
+    if by_category.get("tool_outputs", 0) >= 20:
+        suggestions.append("Tool output is large. Consider summarizing command logs.")
+    if by_category.get("agents", 0) >= 20:
+        suggestions.append("Project AGENTS.md is long. Consider moving stable preferences to global AGENTS.md.")
+    if by_category.get("user_messages", 0) + by_category.get("assistant_messages", 0) >= 45:
+        suggestions.append("This thread is long. Consider compacting older turns.")
+    if by_category.get("files", 0) + by_category.get("diffs", 0) >= 20:
+        suggestions.append("Files and diffs are prominent. Keep only relevant excerpts in context.")
+    return suggestions
+
+
+def personalization_suggestions(index: CodexThreadIndex, metadata: ThreadMetadataStore, body: dict[str, object]) -> list[dict[str, object]]:
+    scope = optional_str(body.get("scope")) or "current_project"
+    include_values = body.get("include")
+    include = set(include_values if isinstance(include_values, list) else ["active", "archived"])
+    project_path = optional_str(body.get("projectPath")) or ""
+    selected_ids = body.get("selectedThreadIds") if isinstance(body.get("selectedThreadIds"), list) else []
+    selected = {optional_str(value) for value in selected_ids if optional_str(value)}
+    now = time.time()
+    cutoff = now - 30 * 24 * 60 * 60
+
+    if scope == "selected_thread" and not selected:
+        raise ValueError("select at least one thread")
+
+    records = []
+    for record in index.records.values():
+        visibility = metadata.visibility(record.id)
+        if visibility not in include:
+            continue
+        if scope == "current_project" and project_path and record.cwd != project_path:
+            continue
+        if scope == "selected_thread" and record.id not in selected:
+            continue
+        if scope == "last_30_days" and (record.updated_at or record.file_mtime or 0) < cutoff:
+            continue
+        records.append(record)
+
+    records.sort(key=lambda item: item.updated_at or item.file_mtime or 0, reverse=True)
+    samples = thread_text_samples(index, records[:80])
+    return derive_personalization_suggestions(records, samples, project_path)
+
+
+def thread_text_samples(index: CodexThreadIndex, records: list[object]) -> list[str]:
+    samples: list[str] = []
+    for record in records:
+        thread = index.get_thread(record.id)
+        if not thread:
+            continue
+        parts = [thread.get("title") or "", thread.get("preview") or ""]
+        for message in thread.get("messages") or []:
+            if isinstance(message, dict):
+                parts.append(optional_str(message.get("text")) or "")
+        text = "\n".join(part for part in parts if part)
+        if text:
+            samples.append(text[:8000])
+    return samples
+
+
+def derive_personalization_suggestions(records: list[object], samples: list[str], project_path: str) -> list[dict[str, object]]:
+    corpus = "\n".join(samples)
+    lowered = corpus.casefold()
+    suggestions: list[dict[str, object]] = []
+
+    def add(id_: str, category: str, target: str, text: str, evidence: str) -> None:
+        suggestions.append(
+            {
+                "id": id_,
+                "category": category,
+                "target": target,
+                "text": text,
+                "evidence": evidence,
+                "selected": True,
+            }
+        )
+
+    if re.search(r"小步|小改|minimal|focused|不要.*重构|unrelated|不要大规模", lowered):
+        add("minimal-diffs", "Coding preferences", "global", "Prefer focused, minimal diffs and avoid unrelated refactors unless explicitly requested.", "Detected repeated requests for small scoped changes.")
+    if re.search(r"检查|验证|验收|node --check|pytest|ctest|run\\.sh|编译|测试", lowered):
+        add("verification-summary", "Review preferences", "global", "Include concise verification commands and results when finishing implementation work.", "Detected repeated emphasis on checks, builds, or acceptance.")
+    if re.search(r"前因后果|从哪里开始|解释|看代码|阅读", lowered):
+        add("explain-causally", "Learning preferences", "global", "When explaining code, start from entry points and describe the causal chain before implementation details.", "Detected code-reading and explanation-oriented threads.")
+    if "codex-web" in project_path or any(getattr(record, "cwd", "") == PROJECT_ROOT.as_posix() for record in records):
+        add("codex-web-js-check", "Project workflow", "project", "For frontend JavaScript edits, run `node --check static/app.js` before finishing.", "Current project uses a single static JavaScript entrypoint.")
+        add("codex-web-local-thread-metadata", "Project conventions", "project", "Thread rename, archive, hide, and restore are local metadata operations; do not call Codex rename, delete, or archive APIs for them.", "Detected codex-web thread-management requirements.")
+    if re.search(r"openclash|router|路由|配置|当前配置", lowered):
+        add("inspect-live-config", "Operational preferences", "global", "For router or local-machine troubleshooting, inspect live state before giving generic advice.", "Detected operational troubleshooting threads.")
+
+    if not suggestions:
+        add("default-focused-work", "Coding preferences", "global", "Keep changes scoped to the requested behavior and report verification clearly.", f"Learned from {len(records)} selected threads.")
+    return suggestions
+
+
+def text_from_any_content(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                parts.append(optional_str(item.get("text")) or optional_str(item.get("content")) or "")
+        return "\n".join(part for part in parts if part)
+    if isinstance(value, dict):
+        return optional_str(value.get("text")) or optional_str(value.get("content")) or ""
+    return ""
+
+
+def text_from_payload(payload: dict[str, object]) -> str:
+    values: list[str] = []
+    for key in ["output", "aggregatedOutput", "result", "error", "text", "command", "diff", "unifiedDiff"]:
+        value = payload.get(key)
+        if isinstance(value, (dict, list)):
+            values.append(json.dumps(value, ensure_ascii=False))
+        else:
+            values.append(optional_str(value) or "")
+    if payload.get("content"):
+        values.append(text_from_any_content(payload.get("content")))
+    return "\n".join(value for value in values if value)
+
+
+def tool_output_label(payload: dict[str, object]) -> str:
+    command = optional_str(payload.get("command"))
+    if command:
+        return f"Tool output: {command[:80]}"
+    return optional_str(payload.get("tool")) or optional_str(payload.get("type")) or "Tool output"
+
+
+def is_agents_context(text: str) -> bool:
+    value = text.strip()
+    return value.startswith("# AGENTS.md instructions") or value.startswith("<INSTRUCTIONS>")
+
+
+def estimate_tokens(text: str) -> int:
+    return max(1, round(len(text) / 4))
+
+
+def parse_json_line(line: str) -> dict[str, object] | None:
+    try:
+        value = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def parse_int(value: str | None, default: int) -> int:
     if value is None:
         return default
@@ -471,12 +940,13 @@ def parse_positive_int(value: object, default: int) -> int:
     return max(1, parsed)
 
 
-def make_handler(index: CodexThreadIndex, bridge: CodexBridge) -> type[ThreadManagerHandler]:
+def make_handler(index: CodexThreadIndex, bridge: CodexBridge, metadata: "ThreadMetadataStore") -> type[ThreadManagerHandler]:
     class BoundThreadManagerHandler(ThreadManagerHandler):
         pass
 
     BoundThreadManagerHandler.index = index
     BoundThreadManagerHandler.bridge = bridge
+    BoundThreadManagerHandler.metadata = metadata
     return BoundThreadManagerHandler
 
 
@@ -491,8 +961,9 @@ def main(argv: list[str] | None = None) -> int:
     index.rebuild()
     bridge = CodexBridge(PROJECT_ROOT)
     index.project_root = PROJECT_ROOT
+    metadata = ThreadMetadataStore(args.codex_home / "codex-web-thread-metadata.json")
 
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(index, bridge))
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(index, bridge, metadata))
     print(f"codex-web listening on http://{args.host}:{args.port}", flush=True)
     print(f"reading Codex data from {index.codex_home}", flush=True)
     try:

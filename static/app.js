@@ -1,13 +1,38 @@
 const THREAD_CONFIG_STORAGE_KEY = "codexThreadConfigs.v1";
+const THREAD_METADATA_STORAGE_KEY = "codexThreadMetadata.v1";
+const AGENTS_DRAFT_STORAGE_KEY = "codexAgentsDraft.v1";
 const THREAD_HISTORY_PAGE_SIZE = 24;
+const THREAD_VISIBILITIES = new Set(["active", "archived", "hidden"]);
 
 const state = {
   items: [],
   facets: { sources: [], cwds: [] },
-  selectedId: null,
+  projectRoot: "",
+  codexHome: "",
   models: [],
   modelsLoaded: false,
   threadConfigs: loadThreadConfigs(),
+  threadMetadata: loadThreadMetadata(),
+  sidebarQuery: "",
+  threadManager: {
+    open: false,
+    scope: "active",
+    query: "",
+    project: "",
+    sort: "recent",
+    selectedIds: new Set(),
+  },
+  detailsTab: "overview",
+  renameTargetThreadId: "",
+  toastTimer: null,
+  personalization: {
+    step: 1,
+    suggestions: [],
+    preview: null,
+    target: "project",
+    selectedThreadIds: new Set(),
+    threadQuery: "",
+  },
   applyingThreadConfig: false,
   codex: {
     threadId: null,
@@ -46,32 +71,25 @@ const state = {
     latestDiff: "",
     changedFiles: [],
     runningCommand: "",
+    contextBreakdown: null,
+    contextBreakdownEstimated: false,
+    contextContributors: [],
+    contextSuggestions: [],
   },
 };
 
 const els = {
-  threadsTabButton: document.getElementById("threadsTabButton"),
-  chatTabButton: document.getElementById("chatTabButton"),
-  threadsTab: document.getElementById("threadsTab"),
   chatTab: document.getElementById("chatTab"),
-  stats: document.getElementById("stats"),
-  filters: document.getElementById("filters"),
-  q: document.getElementById("q"),
-  archived: document.getElementById("archived"),
-  source: document.getElementById("source"),
-  cwd: document.getElementById("cwd"),
-  sort: document.getElementById("sort"),
-  threadRows: document.getElementById("threadRows"),
-  emptyState: document.getElementById("emptyState"),
-  details: document.getElementById("details"),
-  rebuildButton: document.getElementById("rebuildButton"),
   appWorkspace: document.getElementById("appWorkspace"),
   codexStatus: document.getElementById("codexStatus"),
   chatWorkbench: document.querySelector(".chat-workbench"),
   detailsToggle: document.getElementById("detailsToggle"),
+  chatThreadTitle: document.getElementById("chatThreadTitle"),
+  chatHeaderRename: document.getElementById("chatHeaderRename"),
   chatPrimaryStatus: document.getElementById("chatPrimaryStatus"),
   chatPrimaryContext: document.getElementById("chatPrimaryContext"),
   chatPrimaryModel: document.getElementById("chatPrimaryModel"),
+  chatPrimaryCwd: document.getElementById("chatPrimaryCwd"),
   chatThread: document.getElementById("chatThread"),
   copyThreadId: document.getElementById("copyThreadId"),
   chatSessionValue: document.getElementById("chatSessionValue"),
@@ -130,18 +148,68 @@ const els = {
   resumeThreadId: document.getElementById("resumeThreadId"),
   interruptCodexTurn: document.getElementById("interruptCodexTurn"),
   sidebarThreadCount: document.getElementById("sidebarThreadCount"),
+  sidebarNewThread: document.getElementById("sidebarNewThread"),
+  sidebarThreadSearch: document.getElementById("sidebarThreadSearch"),
   sidebarThreads: document.getElementById("sidebarThreads"),
   sidebarTaskStatus: document.getElementById("sidebarTaskStatus"),
   sidebarTaskMeta: document.getElementById("sidebarTaskMeta"),
+  overviewStatus: document.getElementById("overviewStatus"),
   sidebarChangedCount: document.getElementById("sidebarChangedCount"),
   sidebarChangedFiles: document.getElementById("sidebarChangedFiles"),
+  inspectorFilesCount: document.getElementById("inspectorFilesCount"),
+  inspectorFilesList: document.getElementById("inspectorFilesList"),
   sidebarRunningCommand: document.getElementById("sidebarRunningCommand"),
   sidebarModel: document.getElementById("sidebarModel"),
   sidebarReasoning: document.getElementById("sidebarReasoning"),
   sidebarContext: document.getElementById("sidebarContext"),
+  openThreadManager: document.getElementById("openThreadManager"),
+  threadManagerModal: document.getElementById("threadManagerModal"),
+  closeThreadManager: document.getElementById("closeThreadManager"),
+  threadManagerSearch: document.getElementById("threadManagerSearch"),
+  threadManagerProject: document.getElementById("threadManagerProject"),
+  threadManagerSort: document.getElementById("threadManagerSort"),
+  threadManagerBulkbar: document.getElementById("threadManagerBulkbar"),
+  threadManagerSelectAll: document.getElementById("threadManagerSelectAll"),
+  threadManagerSelectedCount: document.getElementById("threadManagerSelectedCount"),
+  bulkRestoreThreads: document.getElementById("bulkRestoreThreads"),
+  bulkArchiveThreads: document.getElementById("bulkArchiveThreads"),
+  bulkHideThreads: document.getElementById("bulkHideThreads"),
+  threadManagerResults: document.getElementById("threadManagerResults"),
+  renameThreadModal: document.getElementById("renameThreadModal"),
+  closeRenameThreadModal: document.getElementById("closeRenameThreadModal"),
+  cancelRenameThread: document.getElementById("cancelRenameThread"),
+  confirmRenameThread: document.getElementById("confirmRenameThread"),
+  renameThreadInput: document.getElementById("renameThreadInput"),
+  contextUsageValue: document.getElementById("contextUsageValue"),
+  contextStackedBar: document.getElementById("contextStackedBar"),
+  contextBreakdownEmpty: document.getElementById("contextBreakdownEmpty"),
+  contextLargestContributors: document.getElementById("contextLargestContributors"),
+  contextSuggestions: document.getElementById("contextSuggestions"),
+  toastRegion: document.getElementById("toastRegion"),
+  openPersonalization: document.getElementById("openPersonalization"),
+  openPersonalizationFromConfig: document.getElementById("openPersonalizationFromConfig"),
+  personalizationModal: document.getElementById("personalizationModal"),
+  closePersonalization: document.getElementById("closePersonalization"),
+  cancelPersonalization: document.getElementById("cancelPersonalization"),
+  personalizationBack: document.getElementById("personalizationBack"),
+  personalizationNext: document.getElementById("personalizationNext"),
+  personalizationApply: document.getElementById("personalizationApply"),
+  personalizationSaveDraft: document.getElementById("personalizationSaveDraft"),
+  personalizationSteps: document.getElementById("personalizationSteps"),
+  personalizationSubtitle: document.getElementById("personalizationSubtitle"),
+  personalizationProjectLabel: document.getElementById("personalizationProjectLabel"),
+  personalizationIncludeActive: document.getElementById("personalizationIncludeActive"),
+  personalizationIncludeArchived: document.getElementById("personalizationIncludeArchived"),
+  personalizationIncludeHidden: document.getElementById("personalizationIncludeHidden"),
+  personalizationThreadPicker: document.getElementById("personalizationThreadPicker"),
+  personalizationThreadSearch: document.getElementById("personalizationThreadSearch"),
+  personalizationThreadList: document.getElementById("personalizationThreadList"),
+  personalizationSuggestions: document.getElementById("personalizationSuggestions"),
+  projectAgentsPath: document.getElementById("projectAgentsPath"),
+  agentsPreviewMeta: document.getElementById("agentsPreviewMeta"),
+  agentsDiffPreview: document.getElementById("agentsDiffPreview"),
 };
 
-let searchTimer = null;
 const markdownRenderer = createMarkdownRenderer();
 
 function createMarkdownRenderer() {
@@ -261,64 +329,55 @@ function postJson(path, body) {
   });
 }
 
-function params() {
-  const query = new URLSearchParams();
-  query.set("archived", els.archived.value);
-  query.set("sort", els.sort.value);
-  query.set("dir", "desc");
-  query.set("limit", "300");
-  if (els.q.value.trim()) query.set("q", els.q.value.trim());
-  if (els.source.value) query.set("source", els.source.value);
-  if (els.cwd.value) query.set("cwd", els.cwd.value);
-  return query.toString();
-}
-
 async function loadStats() {
   const stats = await api("/api/stats");
+  state.projectRoot = stats.projectRoot || "";
+  state.codexHome = stats.codexHome || "";
   if (stats.projectRoot && !els.chatCwd.value) {
     els.chatCwd.value = stats.projectRoot;
     syncCwdButton();
   } else if (!els.chatCwd.value) {
     setWorkspaceLabel(stats.codexHome || "");
   }
-  els.stats.innerHTML = `
-    <div><b>${formatNumber(stats.total)}</b><span>Total</span></div>
-    <div><b>${formatNumber(stats.active)}</b><span>Active</span></div>
-    <div><b>${formatNumber(stats.archived)}</b><span>Archived</span></div>
-    <div><b>${formatNumber(stats.sources.length)}</b><span>Sources</span></div>
-  `;
+  syncPersonalizationProjectLabels();
+}
+
+async function loadServerThreadMetadata() {
+  try {
+    const data = await api("/api/thread-metadata");
+    if (data && data.metadata && typeof data.metadata === "object") {
+      state.threadMetadata = {};
+      for (const [threadId, value] of Object.entries(data.metadata)) {
+        state.threadMetadata[threadId] = normalizeThreadMetadata({ ...value, threadId });
+      }
+      persistThreadMetadata();
+    }
+  } catch (error) {
+    console.debug("[thread metadata]", error.message);
+  }
 }
 
 async function loadThreads() {
-  const data = await api(`/api/threads?${params()}`);
-  state.items = data.items;
+  const query = new URLSearchParams({
+    archived: "all",
+    sort: "updatedAt",
+    dir: "desc",
+    limit: "1000",
+  });
+  const data = await api(`/api/threads?${query.toString()}`);
+  state.items = data.items || [];
   state.facets = data.facets;
   seedThreadConfigsFromItems(state.items);
+  seedThreadMetadataFromItems(state.items);
   populateFacets();
-  renderRows();
+  renderSidebarThreads();
+  renderThreadManager();
+  renderPersonalizationThreadPicker();
+  renderChatThreadLine();
 }
 
 function populateFacets() {
-  populateSelect(els.source, state.facets.sources, "All sources");
-  populateSelect(els.cwd, state.facets.cwds, "All directories");
   populateChatCwdSelect(state.facets.cwds);
-}
-
-function populateSelect(select, values, emptyLabel) {
-  const current = select.value;
-  select.innerHTML = "";
-  const empty = document.createElement("option");
-  empty.value = "";
-  empty.textContent = emptyLabel;
-  select.appendChild(empty);
-
-  for (const item of values) {
-    const option = document.createElement("option");
-    option.value = item.value;
-    option.textContent = `${item.value} (${item.count})`;
-    select.appendChild(option);
-  }
-  select.value = [...select.options].some((option) => option.value === current) ? current : "";
 }
 
 function populateChatCwdSelect(values) {
@@ -395,135 +454,703 @@ function renderChatCwdMenu(items, selectedValue) {
   markChoiceMenuSelection(menu, selectedValue);
 }
 
-function renderRows() {
-  els.threadRows.innerHTML = "";
-  els.emptyState.hidden = state.items.length !== 0;
-  renderSidebarThreads();
+function activeThreadItem() {
+  if (!state.codex.threadId) return null;
+  return state.items.find((item) => item.id === state.codex.threadId) || null;
+}
 
-  for (const item of state.items) {
-    const tr = document.createElement("tr");
-    tr.className = item.id === state.selectedId ? "selected" : "";
-    tr.innerHTML = `
-      <td class="thread-cell">
-        <div class="thread-title">${escapeHtml(item.title || item.preview || item.id)}</div>
-        <div class="thread-preview">${escapeHtml(item.preview || "")}</div>
-        <div class="thread-meta">${escapeHtml(item.id)}${item.archived ? " · archived" : ""}</div>
-      </td>
-      <td>${formatDate(item.updatedAtIso || item.fileMtimeIso)}</td>
-      <td class="cwd-cell" title="${escapeAttr(item.cwd || "")}">${escapeHtml(shortPath(item.cwd))}</td>
-      <td><span class="pill">${escapeHtml(sourceLabel(item))}</span></td>
-      <td>${escapeHtml(item.fileSizeLabel || "")}</td>
-      <td><button type="button" data-id="${escapeAttr(item.id)}">View</button></td>
-    `;
-    tr.addEventListener("click", (event) => {
-      if (event.target instanceof HTMLButtonElement) {
-        event.stopPropagation();
-      }
-      selectThread(item.id);
-    });
-    tr.querySelector("button").addEventListener("click", () => selectThread(item.id));
-    els.threadRows.appendChild(tr);
+function threadTitle(itemOrId) {
+  const item = typeof itemOrId === "object" ? itemOrId : state.items.find((entry) => entry.id === itemOrId);
+  const id = typeof itemOrId === "string" ? itemOrId : item?.id;
+  const metadata = threadMetadata(id);
+  return metadata.displayName || item?.title || item?.preview || (id ? `Thread ${shortId(id)}` : "New thread");
+}
+
+function threadProjectPath(itemOrId) {
+  const item = typeof itemOrId === "object" ? itemOrId : state.items.find((entry) => entry.id === itemOrId);
+  const id = typeof itemOrId === "string" ? itemOrId : item?.id;
+  const metadata = threadMetadata(id);
+  return metadata.projectPath || item?.cwd || "";
+}
+
+function threadUpdatedAt(item) {
+  const metadata = threadMetadata(item?.id);
+  return item?.updatedAtIso || item?.fileMtimeIso || metadata.updatedAt || item?.createdAtIso || "";
+}
+
+function threadCreatedAt(item) {
+  const metadata = threadMetadata(item?.id);
+  return item?.createdAtIso || metadata.createdAt || "";
+}
+
+function threadVisibility(itemOrId) {
+  const id = typeof itemOrId === "string" ? itemOrId : itemOrId?.id;
+  return threadMetadata(id).visibility || "active";
+}
+
+function isSidebarVisibleThread(item) {
+  return threadVisibility(item) === "active";
+}
+
+function threadSearchHaystack(item) {
+  const metadata = threadMetadata(item?.id);
+  return [
+    metadata.displayName,
+    item?.title,
+    item?.preview,
+    metadata.projectPath,
+    item?.cwd,
+    item?.id,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function threadMatchesQuery(item, query) {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle) return true;
+  return threadSearchHaystack(item).includes(needle);
+}
+
+function compareThreadsRecent(left, right) {
+  const pinnedDelta = Number(Boolean(threadMetadata(right.id).pinned)) - Number(Boolean(threadMetadata(left.id).pinned));
+  if (pinnedDelta) return pinnedDelta;
+  return new Date(threadUpdatedAt(right) || 0).getTime() - new Date(threadUpdatedAt(left) || 0).getTime();
+}
+
+function threadStatusLabel(item) {
+  if (item?.id && item.id === state.codex.threadId) return currentSessionStatus();
+  const visibility = threadVisibility(item);
+  if (visibility === "archived") return "Archived";
+  if (visibility === "hidden") return "Hidden";
+  return item?.archived ? "Codex archived" : "Ready";
+}
+
+function threadSecondaryLine(item) {
+  return [shortPath(threadProjectPath(item)) || "No directory", formatDate(threadUpdatedAt(item)), threadStatusLabel(item)]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function groupRecentThreads(items) {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const weekStart = todayStart - 6 * 24 * 60 * 60 * 1000;
+  const groups = [
+    { label: "Today", items: [] },
+    { label: "This week", items: [] },
+    { label: "Older", items: [] },
+  ];
+
+  for (const item of items) {
+    const updated = new Date(threadUpdatedAt(item) || 0).getTime();
+    if (updated >= todayStart) groups[0].items.push(item);
+    else if (updated >= weekStart) groups[1].items.push(item);
+    else groups[2].items.push(item);
   }
+  return groups.filter((group) => group.items.length);
 }
 
 function renderSidebarThreads() {
   els.sidebarThreads.innerHTML = "";
-  const items = state.items.slice(0, 12);
-  els.sidebarThreadCount.textContent = formatNumber(state.items.length);
+  const query = state.sidebarQuery || "";
+  const activeItems = state.items
+    .filter(isSidebarVisibleThread)
+    .filter((item) => threadMatchesQuery(item, query))
+    .sort(compareThreadsRecent);
+  const pinned = activeItems.filter((item) => threadMetadata(item.id).pinned);
+  const recent = activeItems.filter((item) => !threadMetadata(item.id).pinned);
+  els.sidebarThreadCount.textContent = formatNumber(activeItems.length);
 
+  if (!activeItems.length) {
+    els.sidebarThreads.innerHTML = `<span class="sidebar-empty">${query ? "No active threads match." : "No active threads."}</span>`;
+    return;
+  }
+
+  if (pinned.length) appendSidebarThreadGroup("Pinned", pinned);
+  const groups = groupRecentThreads(recent);
+  if (groups.length) appendSidebarThreadGroup("Recent", groups);
+}
+
+function appendSidebarThreadGroup(label, groupOrItems) {
+  const section = document.createElement("section");
+  section.className = "thread-group";
+  section.innerHTML = `<h4>${escapeHtml(label)}</h4>`;
+
+  if (Array.isArray(groupOrItems) && groupOrItems[0]?.items) {
+    for (const group of groupOrItems) {
+      const subgroup = document.createElement("div");
+      subgroup.className = "thread-subgroup";
+      subgroup.innerHTML = `<h5>${escapeHtml(group.label)}</h5>`;
+      for (const item of group.items) subgroup.appendChild(createSidebarThreadItem(item));
+      section.appendChild(subgroup);
+    }
+  } else {
+    for (const item of groupOrItems) section.appendChild(createSidebarThreadItem(item));
+  }
+
+  els.sidebarThreads.appendChild(section);
+}
+
+function createSidebarThreadItem(item) {
+  const wrapper = document.createElement("article");
+  wrapper.className = `sidebar-thread ${item.id === state.codex.threadId ? "active" : ""}`;
+  wrapper.dataset.threadId = item.id;
+  wrapper.title = item.id;
+  wrapper.innerHTML = `
+    <button class="thread-item-main" type="button">
+      <strong>${escapeHtml(threadTitle(item))}</strong>
+      <span>${escapeHtml(threadSecondaryLine(item))}</span>
+    </button>
+    <button class="thread-item-menu-button" type="button" aria-haspopup="menu" aria-expanded="false" title="Thread actions">...</button>
+    <div class="thread-item-menu" role="menu" hidden>
+      ${threadActionMenuHtml(item)}
+    </div>
+  `;
+  wrapper.querySelector(".thread-item-main").addEventListener("click", () => resumeThreadFromNavigator(item.id));
+  wrapper.querySelector(".thread-item-menu-button").addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleThreadItemMenu(wrapper);
+  });
+  wrapper.querySelector(".thread-item-menu").addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("[data-local-thread-action]") : null;
+    if (!button) return;
+    event.stopPropagation();
+    closeThreadItemMenus();
+    handleLocalThreadAction(button.getAttribute("data-local-thread-action"), item.id);
+  });
+  return wrapper;
+}
+
+function threadActionMenuHtml(item) {
+  const metadata = threadMetadata(item.id);
+  return `
+    <button type="button" data-local-thread-action="rename" role="menuitem">Rename</button>
+    <button type="button" data-local-thread-action="pin" role="menuitem">${metadata.pinned ? "Unpin" : "Pin"}</button>
+    <button type="button" data-local-thread-action="archive" role="menuitem">Archive</button>
+    <button type="button" data-local-thread-action="hide" role="menuitem">Hide from sidebar</button>
+  `;
+}
+
+function toggleThreadItemMenu(wrapper) {
+  const menu = wrapper.querySelector(".thread-item-menu");
+  const button = wrapper.querySelector(".thread-item-menu-button");
+  const willOpen = menu.hidden;
+  closeThreadItemMenus();
+  menu.hidden = !willOpen;
+  button.setAttribute("aria-expanded", willOpen ? "true" : "false");
+}
+
+function closeThreadItemMenus() {
+  for (const menu of document.querySelectorAll(".thread-item-menu")) {
+    menu.hidden = true;
+  }
+  for (const button of document.querySelectorAll(".thread-item-menu-button")) {
+    button.setAttribute("aria-expanded", "false");
+  }
+}
+
+function resumeThreadFromNavigator(threadId) {
+  els.resumeThreadId.value = threadId;
+  resumeCodexThreadById().catch((error) => appendChatLine("error", error.message));
+}
+
+function handleLocalThreadAction(action, threadId) {
+  if (!threadId || !action) return;
+  if (action === "rename") {
+    openRenameThreadModal(threadId);
+    return;
+  }
+  if (action === "pin") {
+    const metadata = threadMetadata(threadId);
+    updateThreadMetadata(threadId, { pinned: !metadata.pinned });
+    return;
+  }
+  if (action === "archive") {
+    updateThreadMetadata(threadId, { visibility: "archived" });
+    showToast("Thread archived.", [{ label: "Undo", action: "restore", threadId }]);
+    return;
+  }
+  if (action === "hide") {
+    const previous = threadVisibility(threadId);
+    updateThreadMetadata(threadId, { visibility: "hidden" });
+    showToast("Thread hidden.", [
+      { label: "Undo", action: "set-visibility", threadId, visibility: previous },
+      { label: "View hidden", action: "view-hidden" },
+    ]);
+    return;
+  }
+  if (action === "restore") {
+    updateThreadMetadata(threadId, { visibility: "active" });
+  }
+}
+
+function openRenameThreadModal(threadId) {
+  state.renameTargetThreadId = threadId || "";
+  const item = state.items.find((entry) => entry.id === threadId);
+  const metadata = threadMetadata(threadId);
+  els.renameThreadInput.value = metadata.displayName || item?.title || item?.preview || "";
+  els.renameThreadModal.hidden = false;
+  setTimeout(() => {
+    els.renameThreadInput.focus();
+    els.renameThreadInput.select();
+  }, 0);
+}
+
+function closeRenameThreadModal() {
+  state.renameTargetThreadId = "";
+  els.renameThreadModal.hidden = true;
+}
+
+function confirmRenameThread() {
+  const threadId = state.renameTargetThreadId;
+  const value = els.renameThreadInput.value.trim();
+  if (!threadId) return;
+  if (!value) {
+    appendChatLine("warning", "Thread name cannot be empty.");
+    return;
+  }
+  updateThreadMetadata(threadId, { displayName: value });
+  appendCompactInfo("Thread display name updated locally");
+  closeRenameThreadModal();
+}
+
+function showToast(message, actions = []) {
+  if (!els.toastRegion) return;
+  if (state.toastTimer) clearTimeout(state.toastTimer);
+  els.toastRegion.innerHTML = "";
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  toast.innerHTML = `
+    <span>${escapeHtml(message)}</span>
+    <div class="toast-actions">
+      ${actions.map((action, index) => `<button type="button" data-toast-action="${index}">${escapeHtml(action.label)}</button>`).join("")}
+    </div>
+  `;
+  toast.addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("[data-toast-action]") : null;
+    if (!button) return;
+    const action = actions[Number(button.getAttribute("data-toast-action"))];
+    if (!action) return;
+    handleToastAction(action);
+    els.toastRegion.innerHTML = "";
+  });
+  els.toastRegion.appendChild(toast);
+  state.toastTimer = setTimeout(() => {
+    els.toastRegion.innerHTML = "";
+  }, 8000);
+}
+
+function handleToastAction(action) {
+  if (action.action === "restore") {
+    updateThreadMetadata(action.threadId, { visibility: "active" });
+    return;
+  }
+  if (action.action === "set-visibility") {
+    updateThreadMetadata(action.threadId, { visibility: action.visibility || "active" });
+    return;
+  }
+  if (action.action === "view-hidden") {
+    openThreadManager("hidden");
+  }
+}
+
+function openThreadManager(scope = state.threadManager.scope || "active") {
+  state.threadManager.open = true;
+  state.threadManager.scope = scope;
+  els.threadManagerModal.hidden = false;
+  renderThreadManager();
+  setTimeout(() => els.threadManagerSearch.focus(), 0);
+}
+
+function closeThreadManager() {
+  state.threadManager.open = false;
+  els.threadManagerModal.hidden = true;
+}
+
+function renderThreadManager() {
+  if (!els.threadManagerResults) return;
+  renderThreadManagerProjectOptions();
+  for (const button of document.querySelectorAll("[data-manager-scope]")) {
+    const active = button.getAttribute("data-manager-scope") === state.threadManager.scope;
+    button.classList.toggle("active", active);
+  }
+
+  const items = filteredManagerThreads();
+  const visibleIds = new Set(items.map((item) => item.id));
+  for (const id of [...state.threadManager.selectedIds]) {
+    if (!visibleIds.has(id)) state.threadManager.selectedIds.delete(id);
+  }
+  renderThreadManagerBulkbar(items);
+  els.threadManagerResults.innerHTML = "";
   if (!items.length) {
-    els.sidebarThreads.innerHTML = '<span class="sidebar-empty">No recent sessions.</span>';
+    els.threadManagerResults.innerHTML = '<div class="details-empty compact-empty">No threads match this view.</div>';
     return;
   }
 
   for (const item of items) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `sidebar-thread ${item.id === state.codex.threadId ? "active" : ""}`;
-    button.title = item.id;
-    button.innerHTML = `
-      <strong>${escapeHtml(item.title || item.preview || shortId(item.id))}</strong>
-      <span>${escapeHtml(shortPath(item.cwd) || "No directory")}</span>
-      <em>${escapeHtml(formatDate(item.updatedAtIso || item.fileMtimeIso))}</em>
-    `;
-    button.addEventListener("click", () => {
-      els.resumeThreadId.value = item.id;
-      resumeCodexThreadById().catch((error) => appendChatLine("error", error.message));
-    });
-    els.sidebarThreads.appendChild(button);
+    els.threadManagerResults.appendChild(createThreadManagerRow(item));
   }
 }
 
-async function selectThread(id) {
-  state.selectedId = id;
-  renderRows();
-  els.details.innerHTML = `<div class="details-empty">Loading...</div>`;
-  const item = await api(`/api/threads/${encodeURIComponent(id)}`);
-  mergeThreadConfig(item.id, configFromIndexedThread(item), { overwrite: false });
-  renderDetails(item);
+function renderThreadManagerProjectOptions() {
+  const current = state.threadManager.project || "";
+  const projects = new Map();
+  for (const item of state.items) {
+    const path = threadProjectPath(item);
+    if (path) projects.set(path, (projects.get(path) || 0) + 1);
+  }
+  els.threadManagerProject.innerHTML = "";
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = "All projects";
+  els.threadManagerProject.appendChild(all);
+  for (const [path, count] of [...projects.entries()].sort((left, right) => left[0].localeCompare(right[0]))) {
+    const option = document.createElement("option");
+    option.value = path;
+    option.textContent = `${shortPath(path)} (${count})`;
+    els.threadManagerProject.appendChild(option);
+  }
+  els.threadManagerProject.value = [...els.threadManagerProject.options].some((option) => option.value === current) ? current : "";
+  state.threadManager.project = els.threadManagerProject.value;
 }
 
-function renderDetails(item) {
-  const resumeCommand = `codex resume ${item.id}`;
-  const messages = item.messages || [];
-  els.details.innerHTML = `
-    <div class="details-header">
-      <div>
-        <h2>${escapeHtml(item.title || item.preview || item.id)}</h2>
-        <p>${escapeHtml(item.id)}</p>
-      </div>
-      <div class="details-actions">
-        <button type="button" data-copy="${escapeAttr(item.id)}">Copy ID</button>
-        <button type="button" data-copy="${escapeAttr(resumeCommand)}">Copy Resume</button>
-      </div>
+function filteredManagerThreads() {
+  const scope = state.threadManager.scope;
+  const query = state.threadManager.query;
+  const project = state.threadManager.project;
+  const items = state.items
+    .filter((item) => scope === "all" || threadVisibility(item) === scope)
+    .filter((item) => !project || threadProjectPath(item) === project)
+    .filter((item) => threadMatchesQuery(item, query));
+
+  if (state.threadManager.sort === "title") {
+    return items.sort((left, right) => threadTitle(left).localeCompare(threadTitle(right)));
+  }
+  if (state.threadManager.sort === "project") {
+    return items.sort((left, right) => threadProjectPath(left).localeCompare(threadProjectPath(right)) || compareThreadsRecent(left, right));
+  }
+  return items.sort(compareThreadsRecent);
+}
+
+function createThreadManagerRow(item) {
+  const row = document.createElement("article");
+  row.className = "manager-thread-row";
+  row.dataset.threadId = item.id;
+  const visibility = threadVisibility(item);
+  const restoreButton =
+    visibility === "active"
+      ? ""
+      : '<button type="button" data-manager-action="restore">Restore to sidebar</button>';
+  const archiveButton =
+    visibility === "archived"
+      ? ""
+      : '<button type="button" data-manager-action="archive">Archive</button>';
+  const hideButton =
+    visibility === "hidden"
+      ? ""
+      : '<button type="button" data-manager-action="hide">Hide from sidebar</button>';
+  row.innerHTML = `
+    <label class="manager-row-check" title="Select thread">
+      <input type="checkbox" data-manager-select="${escapeAttr(item.id)}" ${state.threadManager.selectedIds.has(item.id) ? "checked" : ""} />
+    </label>
+    <div class="manager-thread-main">
+      <strong>${escapeHtml(threadTitle(item))}</strong>
+      <span>${escapeHtml(threadProjectPath(item) ? shortPath(threadProjectPath(item)) : item.preview || "No project path")}</span>
+      <em>${escapeHtml([titleCase(visibility), formatDate(threadUpdatedAt(item)), item.archived ? "Codex archived" : ""].filter(Boolean).join(" · "))}</em>
     </div>
-
-    <dl class="meta-grid">
-      <div><dt>Status</dt><dd>${item.archived ? "Archived" : "Active"}</dd></div>
-      <div><dt>Updated</dt><dd>${escapeHtml(formatDateTime(item.updatedAtIso || item.fileMtimeIso))}</dd></div>
-      <div><dt>Created</dt><dd>${escapeHtml(formatDateTime(item.createdAtIso))}</dd></div>
-      <div><dt>Source</dt><dd>${escapeHtml(item.source || "unknown")}</dd></div>
-      <div><dt>Agent</dt><dd>${escapeHtml([item.agent_nickname, item.agent_role].filter(Boolean).join(" · "))}</dd></div>
-      <div><dt>Model</dt><dd>${escapeHtml([item.model_provider, item.model].filter(Boolean).join(" · ") || "")}</dd></div>
-      <div><dt>Reasoning</dt><dd>${escapeHtml(displayReasoningEffort(item.reasoning_effort))}</dd></div>
-      <div><dt>Branch</dt><dd>${escapeHtml(item.git_branch || "")}</dd></div>
-      <div class="wide"><dt>CWD</dt><dd>${escapeHtml(item.cwd || "")}</dd></div>
-      <div class="wide"><dt>Rollout</dt><dd>${escapeHtml(item.rollout_path || "")}</dd></div>
-    </dl>
-
-    <section class="messages">
-      <h3>Preview</h3>
-      ${messages.length ? messages.map(renderMessage).join("") : '<div class="details-empty">No message preview available.</div>'}
-    </section>
+    <div class="manager-row-actions">
+      <button type="button" data-manager-action="open">Open</button>
+      <button type="button" data-manager-action="rename">Rename</button>
+      <button type="button" data-manager-action="pin">${threadMetadata(item.id).pinned ? "Unpin" : "Pin"}</button>
+      ${restoreButton}
+      ${archiveButton}
+      ${hideButton}
+    </div>
   `;
+  row.addEventListener("click", (event) => {
+    const checkbox = event.target instanceof Element ? event.target.closest("[data-manager-select]") : null;
+    if (checkbox) {
+      const id = checkbox.getAttribute("data-manager-select");
+      if (checkbox.checked) state.threadManager.selectedIds.add(id);
+      else state.threadManager.selectedIds.delete(id);
+      renderThreadManagerBulkbar(filteredManagerThreads());
+      return;
+    }
+    const button = event.target instanceof Element ? event.target.closest("[data-manager-action]") : null;
+    if (!button) return;
+    const action = button.getAttribute("data-manager-action");
+    handleManagerThreadAction(action, item.id);
+  });
+  return row;
+}
 
-  for (const button of els.details.querySelectorAll("[data-copy]")) {
-    button.addEventListener("click", () => copyText(button.getAttribute("data-copy")));
+function renderThreadManagerBulkbar(items) {
+  const visibleIds = items.map((item) => item.id);
+  const selectedVisible = visibleIds.filter((id) => state.threadManager.selectedIds.has(id));
+  els.threadManagerSelectedCount.textContent = `${formatNumber(state.threadManager.selectedIds.size)} selected`;
+  els.threadManagerSelectAll.checked = visibleIds.length > 0 && selectedVisible.length === visibleIds.length;
+  els.threadManagerSelectAll.indeterminate = selectedVisible.length > 0 && selectedVisible.length < visibleIds.length;
+  const disabled = state.threadManager.selectedIds.size === 0;
+  for (const button of [els.bulkRestoreThreads, els.bulkArchiveThreads, els.bulkHideThreads]) {
+    button.disabled = disabled;
   }
 }
 
-function renderMessage(message) {
-  return `
-    <article class="message ${escapeAttr(message.role)}">
-      <div class="message-top">
-        <span>${escapeHtml(message.role)}</span>
-        <time>${escapeHtml(formatDateTime(message.timestamp))}</time>
-      </div>
-      <p>${escapeHtml(message.text)}</p>
-    </article>
-  `;
+function setVisibleManagerSelection(checked) {
+  for (const item of filteredManagerThreads()) {
+    if (checked) state.threadManager.selectedIds.add(item.id);
+    else state.threadManager.selectedIds.delete(item.id);
+  }
+  renderThreadManager();
 }
 
-async function rebuild() {
-  els.rebuildButton.disabled = true;
-  els.rebuildButton.textContent = "Rebuilding...";
+function bulkUpdateThreads(patch) {
+  const ids = [...state.threadManager.selectedIds];
+  for (const id of ids) updateThreadMetadata(id, patch);
+  showToast(`${formatNumber(ids.length)} threads updated.`);
+  state.threadManager.selectedIds.clear();
+  renderThreadManager();
+}
+
+function handleManagerThreadAction(action, threadId) {
+  if (action === "open") {
+    closeThreadManager();
+    resumeThreadFromNavigator(threadId);
+    return;
+  }
+  if (action === "restore") {
+    updateThreadMetadata(threadId, { visibility: "active" });
+    showToast("Thread restored to sidebar.");
+    return;
+  }
+  handleLocalThreadAction(action, threadId);
+}
+
+function openPersonalizationWizard() {
+  state.personalization.step = 1;
+  state.personalization.preview = null;
+  state.personalization.suggestions = [];
+  if (!state.personalization.selectedThreadIds.size && state.codex.threadId) {
+    state.personalization.selectedThreadIds.add(state.codex.threadId);
+  }
+  syncPersonalizationProjectLabels();
+  els.personalizationModal.hidden = false;
+  renderPersonalizationWizard();
+}
+
+function closePersonalizationWizard() {
+  els.personalizationModal.hidden = true;
+}
+
+function syncPersonalizationProjectLabels() {
+  const project = state.projectRoot || els.chatCwd.value || "Current project";
+  if (els.personalizationProjectLabel) els.personalizationProjectLabel.textContent = shortPath(project);
+  if (els.projectAgentsPath) els.projectAgentsPath.textContent = shortPath(`${project}/AGENTS.md`);
+}
+
+function renderPersonalizationWizard() {
+  const step = state.personalization.step;
+  els.personalizationSubtitle.textContent =
+    step === 1 ? "Learn from past threads" : step === 2 ? "Choose suggestions" : step === 3 ? "Choose write target" : "Preview before apply";
+  els.personalizationSteps.innerHTML = [1, 2, 3, 4]
+    .map((item) => `<span class="${item === step ? "active" : item < step ? "done" : ""}">${item}</span>`)
+    .join("");
+  for (const panel of document.querySelectorAll("[data-personalization-step]")) {
+    const active = Number(panel.getAttribute("data-personalization-step")) === step;
+    panel.hidden = !active;
+    panel.classList.toggle("active", active);
+  }
+  els.personalizationBack.hidden = step === 1;
+  els.personalizationNext.hidden = step === 4;
+  els.personalizationApply.hidden = step !== 4;
+  els.personalizationSaveDraft.hidden = step !== 4;
+  els.personalizationApply.disabled = !state.personalization.preview;
+  if (step === 2) renderPersonalizationSuggestions();
+  if (step === 1) {
+    renderPersonalizationThreadPicker();
+    updatePersonalizationThreadPickerVisibility();
+  }
+  if (step === 4 && !state.personalization.preview) {
+    previewAgentsChanges().catch((error) => {
+      els.agentsPreviewMeta.textContent = error.message;
+      els.agentsDiffPreview.textContent = "";
+    });
+  }
+}
+
+async function nextPersonalizationStep() {
+  if (state.personalization.step === 1) {
+    try {
+      state.personalization.suggestions = await fetchPersonalizationSuggestions();
+    } catch (error) {
+      showToast(error.message);
+      return;
+    }
+  }
+  if (state.personalization.step === 2 && selectedPersonalizationSuggestions().length === 0) {
+    showToast("Select at least one suggestion before previewing a diff.");
+    return;
+  }
+  state.personalization.preview = null;
+  state.personalization.step = Math.min(4, state.personalization.step + 1);
+  renderPersonalizationWizard();
+}
+
+function previousPersonalizationStep() {
+  state.personalization.preview = null;
+  state.personalization.step = Math.max(1, state.personalization.step - 1);
+  renderPersonalizationWizard();
+}
+
+function personalizationScope() {
+  return document.querySelector('input[name="personalizationScope"]:checked')?.value || "current_project";
+}
+
+function agentsTarget() {
+  return document.querySelector('input[name="agentsTarget"]:checked')?.value || "project";
+}
+
+function personalizationPayload() {
+  const include = [];
+  if (els.personalizationIncludeActive.checked) include.push("active");
+  if (els.personalizationIncludeArchived.checked) include.push("archived");
+  if (els.personalizationIncludeHidden.checked) include.push("hidden");
+  return {
+    scope: personalizationScope(),
+    include,
+    projectPath: state.projectRoot || els.chatCwd.value || "",
+    selectedThreadIds: [...state.personalization.selectedThreadIds],
+  };
+}
+
+async function fetchPersonalizationSuggestions() {
+  const data = await postJson("/api/personalization/suggestions", personalizationPayload());
+  return (data.suggestions || []).map((item, index) => ({
+    id: item.id || `suggestion-${index}`,
+    category: item.category || "Detected patterns",
+    target: item.target || "global",
+    text: item.text || "",
+    evidence: item.evidence || "",
+    selected: item.selected !== false,
+  }));
+}
+
+function renderPersonalizationSuggestions() {
+  els.personalizationSuggestions.innerHTML = "";
+  if (!state.personalization.suggestions.length) {
+    els.personalizationSuggestions.innerHTML = '<div class="details-empty compact-empty">No suggestions generated from the selected scope.</div>';
+    return;
+  }
+  for (const suggestion of state.personalization.suggestions) {
+    const label = document.createElement("label");
+    label.className = "suggestion-card";
+    label.innerHTML = `
+      <input type="checkbox" data-suggestion-id="${escapeAttr(suggestion.id)}" ${suggestion.selected ? "checked" : ""} />
+      <span>
+        <strong>${escapeHtml(suggestion.category)}</strong>
+        ${escapeHtml(suggestion.text)}
+        ${suggestion.evidence ? `<em>${escapeHtml(suggestion.evidence)}</em>` : ""}
+      </span>
+    `;
+    label.querySelector("input").addEventListener("change", (event) => {
+      const id = event.target.getAttribute("data-suggestion-id");
+      const item = state.personalization.suggestions.find((entry) => entry.id === id);
+      if (item) item.selected = event.target.checked;
+      state.personalization.preview = null;
+    });
+    els.personalizationSuggestions.appendChild(label);
+  }
+}
+
+function updatePersonalizationThreadPickerVisibility() {
+  const visible = personalizationScope() === "selected_thread";
+  els.personalizationThreadPicker.hidden = !visible;
+}
+
+function renderPersonalizationThreadPicker() {
+  if (!els.personalizationThreadList) return;
+  const query = state.personalization.threadQuery || "";
+  const items = state.items.filter((item) => threadMatchesQuery(item, query)).sort(compareThreadsRecent).slice(0, 80);
+  els.personalizationThreadList.innerHTML = "";
+  if (!items.length) {
+    els.personalizationThreadList.innerHTML = '<div class="details-empty compact-empty">No threads match.</div>';
+    return;
+  }
+  for (const item of items) {
+    const label = document.createElement("label");
+    label.className = "thread-picker-row";
+    label.innerHTML = `
+      <input type="checkbox" data-personalization-thread="${escapeAttr(item.id)}" ${state.personalization.selectedThreadIds.has(item.id) ? "checked" : ""} />
+      <span>
+        <strong>${escapeHtml(threadTitle(item))}</strong>
+        <em>${escapeHtml(threadSecondaryLine(item))}</em>
+      </span>
+    `;
+    label.querySelector("input").addEventListener("change", (event) => {
+      const id = event.target.getAttribute("data-personalization-thread");
+      if (event.target.checked) state.personalization.selectedThreadIds.add(id);
+      else state.personalization.selectedThreadIds.delete(id);
+      state.personalization.preview = null;
+    });
+    els.personalizationThreadList.appendChild(label);
+  }
+}
+
+function selectedPersonalizationSuggestions() {
+  return state.personalization.suggestions.filter((item) => item.selected);
+}
+
+function agentsEntriesForPreview() {
+  const target = agentsTarget();
+  return selectedPersonalizationSuggestions()
+    .filter((item) => target === "project" || item.target !== "project")
+    .map((item) => ({
+      category: item.category,
+      text: item.text,
+    }));
+}
+
+async function previewAgentsChanges() {
+  const target = agentsTarget();
+  const entries = agentsEntriesForPreview();
+  if (!entries.length) {
+    els.agentsPreviewMeta.textContent = "No selected suggestions apply to this target.";
+    els.agentsDiffPreview.textContent = "";
+    state.personalization.preview = null;
+    els.personalizationApply.disabled = true;
+    return;
+  }
+  els.agentsPreviewMeta.textContent = "Generating diff preview...";
+  els.agentsDiffPreview.textContent = "";
+  const preview = await postJson("/api/agents/preview", { target, entries });
+  state.personalization.preview = preview;
+  els.agentsPreviewMeta.textContent = `${preview.exists ? "Updating" : "Creating"} ${shortPath(preview.targetPath || "")}`;
+  els.agentsDiffPreview.textContent = preview.diff || "(no changes)";
+  els.personalizationApply.disabled = !preview.diff;
+}
+
+async function applyAgentsChanges() {
+  if (!state.personalization.preview) return;
+  const entries = agentsEntriesForPreview();
+  const result = await postJson("/api/agents/apply", { target: agentsTarget(), entries });
+  showToast(`AGENTS.md updated: ${shortPath(result.targetPath || "")}`);
+  closePersonalizationWizard();
+}
+
+function saveAgentsDraft() {
+  const draft = {
+    target: agentsTarget(),
+    entries: agentsEntriesForPreview(),
+    diff: state.personalization.preview?.diff || "",
+    savedAt: new Date().toISOString(),
+  };
   try {
-    await api("/api/index/rebuild", { method: "POST" });
-    await loadStats();
-    await loadThreads();
-  } finally {
-    els.rebuildButton.disabled = false;
-    els.rebuildButton.textContent = "Rebuild";
+    window.localStorage?.setItem(AGENTS_DRAFT_STORAGE_KEY, JSON.stringify(draft));
+    showToast("Draft saved locally.");
+  } catch {
+    showToast("Could not save draft locally.");
   }
 }
 
@@ -623,6 +1250,93 @@ function persistThreadConfigs() {
   } catch {
     // localStorage can be unavailable in private or restricted browser contexts.
   }
+}
+
+function loadThreadMetadata() {
+  try {
+    const raw = window.localStorage?.getItem(THREAD_METADATA_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+
+    const metadata = {};
+    for (const [threadId, value] of Object.entries(parsed)) {
+      if (!threadId || !value || typeof value !== "object" || Array.isArray(value)) continue;
+      metadata[threadId] = normalizeThreadMetadata({ ...value, threadId });
+    }
+    return metadata;
+  } catch {
+    return {};
+  }
+}
+
+function persistThreadMetadata() {
+  try {
+    window.localStorage?.setItem(THREAD_METADATA_STORAGE_KEY, JSON.stringify(state.threadMetadata));
+  } catch {
+    // localStorage can be unavailable in private or restricted browser contexts.
+  }
+}
+
+function normalizeThreadMetadata(value = {}) {
+  const metadata = {
+    threadId: configValue(value.threadId) || "",
+    visibility: THREAD_VISIBILITIES.has(value.visibility) ? value.visibility : "active",
+  };
+  if (hasOwn(value, "displayName")) metadata.displayName = configValue(value.displayName);
+  if (hasOwn(value, "pinned")) metadata.pinned = Boolean(value.pinned);
+  if (hasOwn(value, "projectPath")) metadata.projectPath = configValue(value.projectPath);
+  if (hasOwn(value, "createdAt")) metadata.createdAt = configValue(value.createdAt);
+  if (hasOwn(value, "updatedAt")) metadata.updatedAt = configValue(value.updatedAt);
+  if (hasOwn(value, "lastOpenedAt")) metadata.lastOpenedAt = configValue(value.lastOpenedAt);
+  return metadata;
+}
+
+function threadMetadata(threadId) {
+  if (!threadId) return { threadId: "", visibility: "active" };
+  return state.threadMetadata[threadId] || { threadId, visibility: "active" };
+}
+
+function updateThreadMetadata(threadId, patch, options = {}) {
+  if (!threadId) return threadMetadata(threadId);
+  const existing = threadMetadata(threadId);
+  const next = normalizeThreadMetadata({ ...existing, ...patch, threadId });
+  state.threadMetadata[threadId] = next;
+  if (options.persist !== false) persistThreadMetadata();
+  if (options.persist !== false) persistThreadMetadataToServer(threadId, next);
+  renderSidebarThreads();
+  renderThreadManager();
+  renderPersonalizationThreadPicker();
+  renderChatThreadLine();
+  return next;
+}
+
+function persistThreadMetadataToServer(threadId, metadata) {
+  postJson(`/api/thread-metadata/${encodeURIComponent(threadId)}`, metadata).catch((error) => {
+    console.debug("[thread metadata persist]", error.message);
+  });
+}
+
+function seedThreadMetadataFromItems(items) {
+  let changed = false;
+  for (const item of items || []) {
+    if (!item?.id) continue;
+    const existing = threadMetadata(item.id);
+    const next = {
+      ...existing,
+      threadId: item.id,
+      visibility: existing.visibility || "active",
+      projectPath: existing.projectPath || item.cwd || "",
+      createdAt: item.createdAtIso || existing.createdAt || "",
+      updatedAt: item.updatedAtIso || item.fileMtimeIso || existing.updatedAt || "",
+    };
+    const normalized = normalizeThreadMetadata(next);
+    if (JSON.stringify(state.threadMetadata[item.id]) !== JSON.stringify(normalized)) {
+      state.threadMetadata[item.id] = normalized;
+      changed = true;
+    }
+  }
+  if (changed) persistThreadMetadata();
 }
 
 function normalizeThreadConfig(value = {}) {
@@ -1364,19 +2078,6 @@ async function startNewCodexThread(clearTranscript = true, overrideOptions = nul
   setChatActivity("Ready");
 }
 
-function switchTab(tab) {
-  const chatActive = tab === "chat";
-  els.threadsTab.hidden = chatActive;
-  els.chatTab.hidden = !chatActive;
-  els.threadsTab.classList.toggle("active", !chatActive);
-  els.chatTab.classList.toggle("active", chatActive);
-  els.threadsTabButton.classList.toggle("active", !chatActive);
-  els.chatTabButton.classList.toggle("active", chatActive);
-  if (chatActive) {
-    loadCodexModels().catch((error) => appendChatLine("error", error.message));
-  }
-}
-
 async function resumeCodexThreadById() {
   await loadCodexModels();
   const threadId = els.resumeThreadId.value.trim();
@@ -1525,35 +2226,39 @@ async function rollbackActiveThread() {
   });
 }
 
-async function renameActiveThread() {
-  const threadId = activeThreadForAction("Rename");
-  if (!threadId) return;
-  const item = state.items.find((entry) => entry.id === threadId);
-  const currentName = item?.title || item?.preview || "";
-  const name = window.prompt("Thread name", currentName);
-  if (name === null) return;
-  const trimmed = name.trim();
-  if (!trimmed) {
-    appendChatLine("warning", "Thread name cannot be empty.");
+function renameActiveThread() {
+  const threadId = state.codex.threadId;
+  if (!threadId) {
+    appendChatLine("warning", "Start or resume a thread before renaming it.");
     return;
   }
-  await runThreadAction("Renaming thread", async () => {
-    await postJson("/api/codex/rename", { threadId, name: trimmed });
-    appendCompactInfo("Thread renamed");
-    loadThreads().catch((error) => console.debug("[threads refresh]", error.message));
-  });
+  openRenameThreadModal(threadId);
 }
 
-async function archiveActiveThread() {
-  const threadId = activeThreadForAction("Archive");
-  if (!threadId) return;
-  const ok = window.confirm("Archive this thread?");
-  if (!ok) return;
-  await runThreadAction("Archiving thread", async () => {
-    await postJson("/api/codex/archive", { threadId });
-    appendCompactInfo("Thread archived");
-    loadThreads().catch((error) => console.debug("[threads refresh]", error.message));
-  });
+function archiveActiveThread() {
+  const threadId = state.codex.threadId;
+  if (!threadId) {
+    appendChatLine("warning", "Start or resume a thread before archiving it.");
+    return;
+  }
+  updateThreadMetadata(threadId, { visibility: "archived" });
+  appendCompactInfo("Thread archived locally");
+  showToast("Thread archived.", [{ label: "Undo", action: "restore", threadId }]);
+}
+
+function hideActiveThread() {
+  const threadId = state.codex.threadId;
+  if (!threadId) {
+    appendChatLine("warning", "Start or resume a thread before hiding it.");
+    return;
+  }
+  const previous = threadVisibility(threadId);
+  updateThreadMetadata(threadId, { visibility: "hidden" });
+  appendCompactInfo("Thread hidden from sidebar");
+  showToast("Thread hidden.", [
+    { label: "Undo", action: "set-visibility", threadId, visibility: previous },
+    { label: "View hidden", action: "view-hidden" },
+  ]);
 }
 
 async function runShellCommandInThread() {
@@ -1592,6 +2297,7 @@ function handleThreadActionMenuClick(event) {
   if (action === "rollback") rollbackActiveThread();
   else if (action === "rename") renameActiveThread();
   else if (action === "archive") archiveActiveThread();
+  else if (action === "hide") hideActiveThread();
   else if (action === "shell") runShellCommandInThread();
 }
 
@@ -2422,10 +3128,17 @@ function codeChangeTitle(title, files) {
 
 function renderChatThreadLine() {
   if (state.codex.threadId) {
-    els.chatThread.textContent = `Thread ${shortId(state.codex.threadId)}`;
+    const item = activeThreadItem();
+    els.chatThreadTitle.textContent = threadTitle(item || state.codex.threadId);
+    els.chatThreadTitle.title = threadTitle(item || state.codex.threadId);
+    els.chatHeaderRename.disabled = false;
+    els.chatThread.textContent = shortId(state.codex.threadId);
     els.chatThread.title = state.codex.threadId;
     els.copyThreadId.disabled = false;
   } else {
+    els.chatThreadTitle.textContent = "New thread";
+    els.chatThreadTitle.title = "";
+    els.chatHeaderRename.disabled = true;
     els.chatThread.textContent = "No active thread";
     els.chatThread.title = "";
     els.copyThreadId.disabled = true;
@@ -2685,7 +3398,55 @@ function updateTokenUsage(params) {
     input,
     output,
   };
+  state.codex.contextBreakdown = normalizeContextBreakdown(params);
+  state.codex.contextBreakdownEstimated = false;
+  state.codex.contextContributors = [];
+  state.codex.contextSuggestions = [];
   renderChatStatus();
+}
+
+function normalizeContextBreakdown(params) {
+  const info = firstObject(params.info, params);
+  const usage = firstObject(params.tokenUsage, params.token_usage, params.usage, info.tokenUsage, info.token_usage, info.usage, params);
+  const raw = firstArray(
+    params.contextBreakdown,
+    params.context_breakdown,
+    params.breakdown,
+    usage.contextBreakdown,
+    usage.context_breakdown,
+    usage.breakdown,
+    info.contextBreakdown,
+    info.context_breakdown,
+  );
+  if (!raw.length) return null;
+
+  const totalTokens = raw.reduce((sum, item) => sum + Math.max(0, Number(item?.tokens || item?.tokenCount || item?.token_count || 0)), 0);
+  const items = raw
+    .map((item, index) => {
+      if (!item || typeof item !== "object") return null;
+      const tokens = Math.max(0, Number(item.tokens || item.tokenCount || item.token_count || 0));
+      if (!tokens) return null;
+      const percentage = Number.isFinite(Number(item.percentage))
+        ? Number(item.percentage)
+        : totalTokens
+          ? (tokens / totalTokens) * 100
+          : 0;
+      return {
+        id: String(item.id || item.label || `context-${index}`),
+        label: String(item.label || item.source || item.category || "Context"),
+        category: String(item.category || "other"),
+        tokens,
+        percentage: clamp(percentage, 0, 100),
+        source: optionalText(item.source),
+      };
+    })
+    .filter(Boolean);
+
+  return items.length ? items : null;
+}
+
+function firstArray(...values) {
+  return values.find((value) => Array.isArray(value)) || [];
 }
 
 function updateRateLimits(params) {
@@ -3000,6 +3761,17 @@ function textFromContent(value) {
 
 function setActiveThread(id, options = {}) {
   state.codex.threadId = id;
+  if (id) {
+    const item = state.items.find((entry) => entry.id === id);
+    updateThreadMetadata(
+      id,
+      {
+        projectPath: threadProjectPath(item || id) || els.chatCwd.value || "",
+        lastOpenedAt: new Date().toISOString(),
+      },
+      { persist: true },
+    );
+  }
   const config = state.threadConfigs[id];
   if (options.applyConfig !== false && config && hasThreadConfigValues(config)) {
     applyThreadConfigToControls(config);
@@ -3007,6 +3779,32 @@ function setActiveThread(id, options = {}) {
   renderChatThreadLine();
   renderSidebarThreads();
   renderActivitySidebar();
+  loadThreadContextBreakdown(id);
+}
+
+async function loadThreadContextBreakdown(threadId) {
+  if (!threadId) return;
+  try {
+    const data = await api(`/api/threads/${encodeURIComponent(threadId)}/context`);
+    if (state.codex.threadId !== threadId) return;
+    state.codex.contextBreakdown = data.items || [];
+    state.codex.contextBreakdownEstimated = Boolean(data.estimated);
+    state.codex.contextContributors = data.contributors || [];
+    state.codex.contextSuggestions = data.suggestions || [];
+    if (!state.codex.tokenUsage && data.totalTokens) {
+      state.codex.tokenUsage = {
+        used: data.totalTokens,
+        derived: true,
+        windowTokens: data.windowTokens || null,
+        totalUsed: data.totalTokens,
+        input: null,
+        output: null,
+      };
+    }
+    renderChatStatus();
+  } catch (error) {
+    console.debug("[context breakdown]", error.message);
+  }
 }
 
 function resetChatTranscript() {
@@ -3024,6 +3822,10 @@ function resetChatTranscript() {
   state.codex.changedFiles = [];
   state.codex.runningCommand = "";
   state.codex.tokenUsage = null;
+  state.codex.contextBreakdown = null;
+  state.codex.contextBreakdownEstimated = false;
+  state.codex.contextContributors = [];
+  state.codex.contextSuggestions = [];
   resetHistoryPaging();
   syncActionAvailability();
   renderChatThreadLine();
@@ -3125,7 +3927,22 @@ function toggleDetailsPanel() {
   const open = !els.chatWorkbench.classList.contains("details-open");
   els.chatWorkbench.classList.toggle("details-open", open);
   els.detailsToggle.setAttribute("aria-expanded", open ? "true" : "false");
-  els.detailsToggle.textContent = open ? "Hide details" : "Details";
+  els.detailsToggle.textContent = open ? "Hide details" : "Show details";
+}
+
+function selectDetailsTab(tab) {
+  state.detailsTab = tab || "overview";
+  for (const button of document.querySelectorAll("[data-details-tab]")) {
+    const active = button.getAttribute("data-details-tab") === state.detailsTab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  }
+  for (const panel of document.querySelectorAll("[data-details-panel]")) {
+    const active = panel.getAttribute("data-details-panel") === state.detailsTab;
+    panel.hidden = !active;
+    panel.classList.toggle("active", active);
+  }
+  if (state.detailsTab === "context") renderContextInspector();
 }
 
 function renderSessionStatus() {
@@ -3149,6 +3966,8 @@ function renderPrimarySummary() {
   els.chatPrimaryStatus.className = sessionStatusClass(status);
   els.chatPrimaryContext.textContent = compactContextLabel();
   els.chatPrimaryModel.textContent = selectedModelLabel();
+  els.chatPrimaryCwd.textContent = shortPath(threadProjectPath(state.codex.threadId) || els.chatCwd.value) || "No directory";
+  els.chatPrimaryCwd.title = threadProjectPath(state.codex.threadId) || els.chatCwd.value || "";
   els.codexStatus.textContent = `${status} · ${compactContextLabel()}`;
 }
 
@@ -3164,12 +3983,14 @@ function compactContextLabel() {
 
 function renderActivitySidebar() {
   const status = currentSessionStatus();
-  const meta = [state.codex.activity, state.codex.threadId ? `Thread ${shortId(state.codex.threadId)}` : "No active thread"]
+  const meta = [state.codex.activity, state.codex.threadId ? threadTitle(state.codex.threadId) : "No active thread"]
     .filter(Boolean)
     .join(" · ");
 
   els.sidebarTaskStatus.textContent = status;
-  els.sidebarTaskStatus.className = sessionStatusClass(status);
+  els.sidebarTaskStatus.className = `session-pill ${sessionStatusClass(status)}`;
+  els.overviewStatus.textContent = status;
+  els.overviewStatus.className = `status-badge ${sessionStatusClass(status)}`;
   els.sidebarTaskMeta.textContent = meta;
   els.sidebarRunningCommand.textContent = state.codex.runningCommand || "None";
   els.sidebarRunningCommand.title = state.codex.runningCommand || "";
@@ -3177,15 +3998,19 @@ function renderActivitySidebar() {
   els.sidebarReasoning.textContent = displayReasoningEffort(els.chatEffort.value);
   els.sidebarContext.textContent = contextSidebarLabel();
   renderChangedFilesSidebar();
+  renderContextInspector();
 }
 
 function renderChangedFilesSidebar() {
   const files = state.codex.changedFiles || [];
   els.sidebarChangedCount.textContent = formatNumber(files.length);
   els.sidebarChangedFiles.innerHTML = "";
+  els.inspectorFilesCount.textContent = formatNumber(files.length);
+  els.inspectorFilesList.innerHTML = "";
 
   if (!files.length) {
     els.sidebarChangedFiles.innerHTML = '<span class="sidebar-empty">No file changes yet.</span>';
+    els.inspectorFilesList.innerHTML = '<span class="sidebar-empty">No file changes yet.</span>';
     return;
   }
 
@@ -3198,6 +4023,16 @@ function renderChangedFilesSidebar() {
       <span>${escapeHtml(relativeProjectPath(file.path || ""))}</span>
     `;
     els.sidebarChangedFiles.appendChild(row);
+  }
+  for (const file of files) {
+    const row = document.createElement("div");
+    row.className = "sidebar-file";
+    row.title = file.path || "";
+    row.innerHTML = `
+      <strong>${escapeHtml(fileChangeVerb(file.kind))}</strong>
+      <span>${escapeHtml(relativeProjectPath(file.path || ""))}</span>
+    `;
+    els.inspectorFilesList.appendChild(row);
   }
 }
 
@@ -3247,6 +4082,85 @@ function renderContextStatus() {
   els.chatContextValue.closest(".inline-meter").title =
     `${formatCompactNumber(used)} of ${formatCompactNumber(windowTokens)} tokens currently in context`;
   setMeter(els.chatContextBar, percent, "used");
+}
+
+function renderContextInspector() {
+  if (!els.contextUsageValue) return;
+  const usage = state.codex.tokenUsage || {};
+  const breakdown = state.codex.contextBreakdown || [];
+  const hasUsage = usage.used !== null && usage.used !== undefined;
+  const hasWindow = usage.windowTokens !== null && usage.windowTokens !== undefined;
+
+  if (hasUsage && hasWindow) {
+    els.contextUsageValue.textContent = `${formatCompactNumber(usage.used)} / ${formatCompactNumber(usage.windowTokens)} tokens${state.codex.contextBreakdownEstimated ? " estimated" : ""}`;
+  } else if (hasUsage) {
+    els.contextUsageValue.textContent = `${formatCompactNumber(usage.used)} tokens${state.codex.contextBreakdownEstimated ? " estimated" : ""}`;
+  } else if (hasWindow) {
+    els.contextUsageValue.textContent = `${formatCompactNumber(usage.windowTokens)} window`;
+  } else {
+    els.contextUsageValue.textContent = "Unavailable";
+  }
+
+  els.contextStackedBar.innerHTML = "";
+  els.contextLargestContributors.innerHTML = "";
+  els.contextSuggestions.innerHTML = "";
+
+  if (!breakdown.length) {
+    els.contextBreakdownEmpty.hidden = false;
+    els.contextStackedBar.hidden = true;
+    els.contextLargestContributors.innerHTML = '<span class="sidebar-empty">No attribution data available.</span>';
+    els.contextSuggestions.innerHTML = '<span class="sidebar-empty">Suggestions will appear when token attribution is available.</span>';
+    return;
+  }
+
+  els.contextBreakdownEmpty.hidden = true;
+  els.contextStackedBar.hidden = false;
+  const sorted = [...breakdown].sort((left, right) => right.tokens - left.tokens);
+  for (const item of sorted) {
+    const segment = document.createElement("span");
+    segment.className = `context-segment ${contextCategoryClass(item.category)}`;
+    segment.style.width = `${Math.max(3, item.percentage)}%`;
+    segment.title = `${item.label}: ${formatCompactNumber(item.tokens)} tokens`;
+    segment.textContent = `${item.label} ${Math.round(item.percentage)}%`;
+    els.contextStackedBar.appendChild(segment);
+  }
+
+  const contributors = state.codex.contextContributors.length ? state.codex.contextContributors : sorted.slice(0, 5);
+  contributors.slice(0, 5).forEach((item, index) => {
+    const row = document.createElement("div");
+    row.className = "context-list-row";
+    row.innerHTML = `<span>${index + 1}. ${escapeHtml(item.label)}</span><strong>${escapeHtml(formatCompactNumber(item.tokens))} tokens</strong>`;
+    els.contextLargestContributors.appendChild(row);
+  });
+
+  const suggestions = state.codex.contextSuggestions.length ? state.codex.contextSuggestions : contextSuggestionsFromBreakdown(sorted);
+  if (!suggestions.length) {
+    els.contextSuggestions.innerHTML = '<span class="sidebar-empty">No context pressure detected.</span>';
+    return;
+  }
+  for (const suggestion of suggestions) {
+    const row = document.createElement("div");
+    row.className = "context-suggestion";
+    row.textContent = suggestion;
+    els.contextSuggestions.appendChild(row);
+  }
+}
+
+function contextCategoryClass(category) {
+  const value = String(category || "other").replace(/[^a-z0-9_-]/gi, "-").toLowerCase();
+  return `category-${value}`;
+}
+
+function contextSuggestionsFromBreakdown(items) {
+  const suggestions = [];
+  const byCategory = new Map();
+  for (const item of items) byCategory.set(item.category, (byCategory.get(item.category) || 0) + item.percentage);
+  if ((byCategory.get("tool_outputs") || 0) >= 20) suggestions.push("Tool output is large. Consider summarizing command logs.");
+  if ((byCategory.get("agents") || 0) >= 20) suggestions.push("Project AGENTS.md is a large context contributor. Consider moving stable preferences to global AGENTS.md.");
+  const conversation = (byCategory.get("user_messages") || 0) + (byCategory.get("assistant_messages") || 0);
+  if (conversation >= 45) suggestions.push("This thread is long. Consider compacting older turns.");
+  if ((byCategory.get("files") || 0) + (byCategory.get("diffs") || 0) >= 20) suggestions.push("Files and diffs are prominent. Keep only the relevant patch or file excerpts in context.");
+  return suggestions;
 }
 
 function contextPercentUsed(tokens, windowTokens) {
@@ -3419,13 +4333,8 @@ function safeId(value) {
   return String(value || "item").replace(/[^a-zA-Z0-9_-]+/g, "-");
 }
 
-function onFilterChange() {
-  if (searchTimer) clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => loadThreads().catch(showError), 180);
-}
-
 function showError(error) {
-  els.details.innerHTML = `<div class="details-empty error">${escapeHtml(error.message)}</div>`;
+  appendChatLine("error", error.message);
 }
 
 function copyText(text) {
@@ -3667,11 +4576,6 @@ function autoSizeChatInput() {
   input.style.overflowY = input.scrollHeight > maxHeight ? "auto" : "hidden";
 }
 
-els.filters.addEventListener("input", onFilterChange);
-els.filters.addEventListener("change", onFilterChange);
-els.threadsTabButton.addEventListener("click", () => switchTab("threads"));
-els.chatTabButton.addEventListener("click", () => switchTab("chat"));
-els.rebuildButton.addEventListener("click", () => rebuild().catch(showError));
 els.chatComposer.addEventListener("submit", sendCodexMessage);
 els.chatInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.isComposing && (event.metaKey || event.ctrlKey || !event.shiftKey)) {
@@ -3687,6 +4591,78 @@ els.reviewThread.addEventListener("click", () => reviewActiveThread());
 els.forkThread.addEventListener("click", () => forkActiveThread());
 els.moreThreadActions.addEventListener("click", toggleThreadActionMenu);
 els.moreThreadActionsMenu.addEventListener("click", handleThreadActionMenuClick);
+els.sidebarNewThread.addEventListener("click", () => openNewThreadModal().catch((error) => appendChatLine("error", error.message)));
+els.sidebarThreadSearch.addEventListener("input", () => {
+  state.sidebarQuery = els.sidebarThreadSearch.value;
+  renderSidebarThreads();
+});
+els.openThreadManager.addEventListener("click", () => openThreadManager("active"));
+els.closeThreadManager.addEventListener("click", closeThreadManager);
+els.threadManagerModal.addEventListener("click", (event) => {
+  if (event.target === els.threadManagerModal) closeThreadManager();
+});
+els.threadManagerModal.addEventListener("click", (event) => {
+  const scopeButton = event.target instanceof Element ? event.target.closest("[data-manager-scope]") : null;
+  if (!scopeButton) return;
+  state.threadManager.scope = scopeButton.getAttribute("data-manager-scope") || "active";
+  renderThreadManager();
+});
+els.threadManagerSearch.addEventListener("input", () => {
+  state.threadManager.query = els.threadManagerSearch.value;
+  renderThreadManager();
+});
+els.threadManagerProject.addEventListener("change", () => {
+  state.threadManager.project = els.threadManagerProject.value;
+  renderThreadManager();
+});
+els.threadManagerSort.addEventListener("change", () => {
+  state.threadManager.sort = els.threadManagerSort.value;
+  renderThreadManager();
+});
+els.threadManagerSelectAll.addEventListener("change", () => setVisibleManagerSelection(els.threadManagerSelectAll.checked));
+els.bulkRestoreThreads.addEventListener("click", () => bulkUpdateThreads({ visibility: "active" }));
+els.bulkArchiveThreads.addEventListener("click", () => bulkUpdateThreads({ visibility: "archived" }));
+els.bulkHideThreads.addEventListener("click", () => bulkUpdateThreads({ visibility: "hidden" }));
+els.chatHeaderRename.addEventListener("click", renameActiveThread);
+els.closeRenameThreadModal.addEventListener("click", closeRenameThreadModal);
+els.cancelRenameThread.addEventListener("click", closeRenameThreadModal);
+els.confirmRenameThread.addEventListener("click", confirmRenameThread);
+els.renameThreadInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    confirmRenameThread();
+  }
+});
+for (const button of document.querySelectorAll("[data-details-tab]")) {
+  button.addEventListener("click", () => selectDetailsTab(button.getAttribute("data-details-tab")));
+}
+els.openPersonalization.addEventListener("click", openPersonalizationWizard);
+els.openPersonalizationFromConfig.addEventListener("click", openPersonalizationWizard);
+els.closePersonalization.addEventListener("click", closePersonalizationWizard);
+els.cancelPersonalization.addEventListener("click", closePersonalizationWizard);
+els.personalizationBack.addEventListener("click", previousPersonalizationStep);
+els.personalizationNext.addEventListener("click", () => nextPersonalizationStep().catch((error) => showToast(error.message)));
+els.personalizationApply.addEventListener("click", () => applyAgentsChanges().catch((error) => showToast(error.message)));
+els.personalizationSaveDraft.addEventListener("click", saveAgentsDraft);
+els.personalizationModal.addEventListener("click", (event) => {
+  if (event.target === els.personalizationModal) closePersonalizationWizard();
+});
+for (const input of document.querySelectorAll('input[name="agentsTarget"]')) {
+  input.addEventListener("change", () => {
+    state.personalization.preview = null;
+    if (state.personalization.step === 4) previewAgentsChanges().catch((error) => showToast(error.message));
+  });
+}
+for (const input of document.querySelectorAll('input[name="personalizationScope"]')) {
+  input.addEventListener("change", () => {
+    state.personalization.preview = null;
+    updatePersonalizationThreadPickerVisibility();
+  });
+}
+els.personalizationThreadSearch.addEventListener("input", () => {
+  state.personalization.threadQuery = els.personalizationThreadSearch.value;
+  renderPersonalizationThreadPicker();
+});
 els.chatCwdButton.addEventListener("click", () => {
   toggleChoiceMenu(els.chatCwdMenu, els.chatCwdButton);
   if (!els.chatCwdMenu.hidden) {
@@ -3789,11 +4765,17 @@ document.addEventListener("click", (event) => {
   if (event.target instanceof Element && event.target.closest(".choice-control")) return;
   if (event.target instanceof Element && event.target.closest(".resume-action")) return;
   if (event.target instanceof Element && event.target.closest(".more-action")) return;
+  if (event.target instanceof Element && event.target.closest(".sidebar-thread")) return;
   closeChoiceMenus();
+  closeThreadItemMenus();
 });
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   closeChoiceMenus();
+  closeThreadItemMenus();
+  if (!els.renameThreadModal.hidden) closeRenameThreadModal();
+  if (!els.threadManagerModal.hidden) closeThreadManager();
+  if (!els.personalizationModal.hidden) closePersonalizationWizard();
   if (!els.newThreadModal.hidden) closeNewThreadModal();
 });
 els.newCodexThread.addEventListener("click", () => openNewThreadModal().catch((error) => appendChatLine("error", error.message)));
@@ -3806,6 +4788,7 @@ updateComposerState();
 autoSizeChatInput();
 
 loadStats()
+  .then(loadServerThreadMetadata)
   .then(loadThreads)
   .then(refreshCodexStatus)
   .then(startCodexEvents)

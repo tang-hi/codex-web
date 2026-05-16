@@ -4,8 +4,9 @@
 
 - 扫描 `~/.codex/state_5.sqlite`
 - 补充扫描 `~/.codex/sessions` 和 `~/.codex/archived_sessions`
-- `Threads` tab 展示 thread 列表、搜索、过滤、排序和详情预览
-- `Web Chat` tab 通过本机 `codex app-server` 跟 Codex 交互，支持选择 CWD、模型、reasoning effort、Fast mode
+- Chat 主界面左侧集成 Thread Navigator，用于本地 rename/archive/hide/restore/pin 和搜索
+- Chat 主界面右侧集成 Details Inspector，用于查看状态、上下文、文件变化和配置
+- Web Chat 通过本机 `codex app-server` 跟 Codex 交互，支持选择 CWD、模型、reasoning effort、Fast mode
 
 默认监听所有网卡，允许同一局域网内的设备访问；Web Chat 中的 thread 操作会通过本机 `codex app-server` 执行。
 
@@ -52,7 +53,8 @@ python3 -m codex_threads_manager.server --host 127.0.0.1 --port 3217
 - `POST /api/codex/turns`，按 cursor 分页读取 thread turns
 - `POST /api/codex/turn`，向当前 thread 发送一轮输入
 - `POST /api/codex/interrupt`，中断当前 turn
-- `POST /api/codex/compact|review|fork|rollback|archive|rename|shell-command`，触发 Codex thread 操作
+- `POST /api/codex/compact|review|fork|rollback|shell-command`，触发 Codex thread 操作
+- `POST /api/agents/preview|apply`，预览并确认写入 AGENTS.md 建议
 
 Codex 交互功能会由本服务按需启动：
 
