@@ -6,6 +6,7 @@ import json
 import mimetypes
 import queue
 import re
+import shlex
 import sys
 import time
 from http import HTTPStatus
@@ -655,9 +656,10 @@ def context_breakdown_for_thread(index: CodexThreadIndex, thread_id: str) -> dic
     path = Path(record.rollout_path).expanduser()
     buckets: dict[str, dict[str, object]] = {}
     contributors: list[dict[str, object]] = []
+    tool_calls: dict[str, dict[str, object]] = {}
     bytes_read = 0
 
-    def add(category: str, label: str, text: str, source: str = "") -> None:
+    def add(category: str, label: str, text: str, source: str = "", **metadata: object) -> None:
         clean = text.strip()
         if not clean:
             return
@@ -678,8 +680,10 @@ def context_breakdown_for_thread(index: CodexThreadIndex, thread_id: str) -> dic
                 "id": f"{category}-{len(contributors)}",
                 "category": category,
                 "label": label,
+                "rawLabel": optional_str(metadata.get("rawLabel")) or label,
                 "tokens": tokens,
                 "source": source,
+                **{key: value for key, value in metadata.items() if value not in ("", None, [], {})},
             }
         )
 
@@ -692,7 +696,7 @@ def context_breakdown_for_thread(index: CodexThreadIndex, thread_id: str) -> dic
                 event = parse_json_line(line)
                 if not event:
                     continue
-                add_context_event(event, add)
+                add_context_event(event, add, tool_calls)
     except OSError:
         return {"items": [], "contributors": [], "suggestions": [], "totalTokens": 0, "estimated": True}
 
@@ -712,7 +716,7 @@ def context_breakdown_for_thread(index: CodexThreadIndex, thread_id: str) -> dic
     }
 
 
-def add_context_event(event: dict[str, object], add: object) -> None:
+def add_context_event(event: dict[str, object], add: object, tool_calls: dict[str, dict[str, object]]) -> None:
     payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
     event_type = optional_str(event.get("type"))
     payload_type = optional_str(payload.get("type"))
@@ -739,6 +743,12 @@ def add_context_event(event: dict[str, object], add: object) -> None:
     if event_type != "response_item":
         return
 
+    if payload_type == "function_call":
+        call_id = optional_str(payload.get("call_id"))
+        if call_id:
+            tool_calls[call_id] = tool_call_metadata(payload)
+        return
+
     if payload_type == "message":
         role = optional_str(payload.get("role")) or "message"
         text = text_from_any_content(payload.get("content"))
@@ -751,11 +761,32 @@ def add_context_event(event: dict[str, object], add: object) -> None:
         return
 
     if payload_type in {"function_call_output", "commandExecution", "mcpToolCall", "dynamicToolCall"}:
-        add("tool_outputs", tool_output_label(payload), text_from_payload(payload), f"response_item.{payload_type}")
+        call_id = optional_str(payload.get("call_id"))
+        metadata = tool_calls.get(call_id, {})
+        label = tool_output_label(payload, metadata)
+        add(
+            "tool_outputs",
+            label,
+            text_from_payload(payload),
+            f"response_item.{payload_type}",
+            rawLabel=payload_type,
+            canSummarize=True,
+            canExclude=True,
+            canInspect=True,
+            **metadata,
+        )
         return
 
     if payload_type in {"fileChange", "patch", "diff"}:
-        add("diffs", "File diff", text_from_payload(payload), f"response_item.{payload_type}")
+        add(
+            "diffs",
+            file_diff_label(payload),
+            text_from_payload(payload),
+            f"response_item.{payload_type}",
+            rawLabel=payload_type,
+            filePath=context_file_path(payload),
+            canInspect=True,
+        )
 
 
 def context_category_label(category: str) -> str:
@@ -897,11 +928,117 @@ def text_from_payload(payload: dict[str, object]) -> str:
     return "\n".join(value for value in values if value)
 
 
-def tool_output_label(payload: dict[str, object]) -> str:
-    command = optional_str(payload.get("command"))
+def tool_call_metadata(payload: dict[str, object]) -> dict[str, object]:
+    tool = optional_str(payload.get("name")) or optional_str(payload.get("tool"))
+    arguments = parse_tool_arguments(payload.get("arguments"))
+    command = optional_str(payload.get("command")) or optional_str(arguments.get("cmd")) or optional_str(arguments.get("command"))
+    file_path = (
+        context_file_path(arguments)
+        or context_file_path(payload)
+        or command_file_path(command)
+    )
+    metadata: dict[str, object] = {}
+    if tool:
+        metadata["tool"] = tool
     if command:
-        return f"Tool output: {command[:80]}"
-    return optional_str(payload.get("tool")) or optional_str(payload.get("type")) or "Tool output"
+        metadata["command"] = command
+    if file_path:
+        metadata["filePath"] = file_path
+    return metadata
+
+
+def parse_tool_arguments(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def tool_output_label(payload: dict[str, object], metadata: dict[str, object] | None = None) -> str:
+    info = metadata or {}
+    command = optional_str(info.get("command")) or optional_str(payload.get("command"))
+    if command:
+        return command_output_label(command, optional_str(info.get("filePath")))
+    tool = optional_str(info.get("tool")) or optional_str(payload.get("tool")) or optional_str(payload.get("name"))
+    if tool == "apply_patch":
+        return "Patch application output"
+    if tool:
+        return f"{tool} output"
+    return "Tool output"
+
+
+def command_output_label(command: str, file_path: str = "") -> str:
+    normalized = " ".join(command.strip().split())
+    if not normalized:
+        return "Command output"
+    if re.search(r"(^|\s)(pytest|py\.test)\b", normalized):
+        return "pytest output"
+    if re.search(r"(^|\s)(npm|pnpm|yarn)\s+install\b", normalized):
+        return "package install log"
+    if normalized.startswith("git diff"):
+        return f"git diff: {file_path}" if file_path else "git diff output"
+    if normalized.startswith("git show"):
+        return f"git show: {file_path}" if file_path else "git show output"
+    if re.match(r"^(rg|grep)\b", normalized):
+        return "search output"
+    if normalized.startswith("node --check"):
+        return "node syntax check output"
+    if "py_compile" in normalized:
+        return "python compile check output"
+    return f"{normalized[:80]} output"
+
+
+def file_diff_label(payload: dict[str, object]) -> str:
+    path = context_file_path(payload)
+    return f"File diff: {path}" if path else "File diff"
+
+
+def context_file_path(payload: dict[str, object]) -> str:
+    for key in ["filePath", "file_path", "path", "filename", "target", "targetPath", "target_path"]:
+        value = optional_str(payload.get(key))
+        if value:
+            return value
+    changes = payload.get("changes")
+    if isinstance(changes, list):
+        for item in changes:
+            if isinstance(item, dict):
+                value = context_file_path(item)
+                if value:
+                    return value
+    diff = optional_str(payload.get("diff")) or optional_str(payload.get("unifiedDiff")) or optional_str(payload.get("unified_diff"))
+    if diff:
+        match = re.search(r"^diff --git a/(.+?) b/(.+)$", diff, re.MULTILINE)
+        if match:
+            return match.group(2) or match.group(1)
+    return ""
+
+
+def command_file_path(command: str) -> str:
+    if not command:
+        return ""
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = command.split()
+    if "--" in parts:
+        candidates = parts[parts.index("--") + 1:]
+    else:
+        candidates = parts[1:]
+    for item in reversed(candidates):
+        if not item or item.startswith("-"):
+            continue
+        if item in {".", "./", "..", "../"}:
+            continue
+        if "|" in item or ">" in item or "<" in item:
+            continue
+        if re.search(r"[/\\.]|(?:^|/)README\.md$|(?:^|/)AGENTS\.md$|(?:^|/)Makefile$|(?:^|/)Dockerfile$", item):
+            return item
+    return ""
 
 
 def is_agents_context(text: str) -> bool:

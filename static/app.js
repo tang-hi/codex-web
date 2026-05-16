@@ -77,7 +77,6 @@ const state = {
     contextBreakdownRefreshTimer: null,
     contextBreakdownEstimated: false,
     contextContributors: [],
-    contextSuggestions: [],
   },
 };
 
@@ -184,10 +183,15 @@ const els = {
   confirmRenameThread: document.getElementById("confirmRenameThread"),
   renameThreadInput: document.getElementById("renameThreadInput"),
   contextUsageValue: document.getElementById("contextUsageValue"),
+  contextPressureValue: document.getElementById("contextPressureValue"),
+  contextHealthMeta: document.getElementById("contextHealthMeta"),
+  contextHealthBar: document.getElementById("contextHealthBar"),
+  contextHealthNote: document.getElementById("contextHealthNote"),
+  contextCategoriesSection: document.getElementById("contextCategoriesSection"),
+  contextCategoryRows: document.getElementById("contextCategoryRows"),
   contextStackedBar: document.getElementById("contextStackedBar"),
   contextBreakdownEmpty: document.getElementById("contextBreakdownEmpty"),
   contextLargestContributors: document.getElementById("contextLargestContributors"),
-  contextSuggestions: document.getElementById("contextSuggestions"),
   toastRegion: document.getElementById("toastRegion"),
   openPersonalization: document.getElementById("openPersonalization"),
   openPersonalizationFromConfig: document.getElementById("openPersonalizationFromConfig"),
@@ -3513,7 +3517,6 @@ function updateTokenUsage(params) {
     state.codex.contextBreakdownThreadId = state.codex.threadId;
     state.codex.contextBreakdownEstimated = false;
     state.codex.contextContributors = [];
-    state.codex.contextSuggestions = [];
   } else {
     scheduleThreadContextBreakdownRefresh(500);
   }
@@ -3881,7 +3884,6 @@ function setActiveThread(id, options = {}) {
     state.codex.contextBreakdownThreadId = null;
     state.codex.contextBreakdownEstimated = false;
     state.codex.contextContributors = [];
-    state.codex.contextSuggestions = [];
   }
   if (id) {
     const item = state.items.find((entry) => entry.id === id);
@@ -3939,7 +3941,6 @@ async function loadThreadContextBreakdown(threadId, options = {}) {
       state.codex.contextBreakdownThreadId = threadId;
       state.codex.contextBreakdownEstimated = Boolean(data.estimated);
       state.codex.contextContributors = data.contributors || [];
-      state.codex.contextSuggestions = data.suggestions || [];
     }
     if (!state.codex.tokenUsage && data.totalTokens) {
       state.codex.tokenUsage = {
@@ -3984,7 +3985,6 @@ function resetChatTranscript() {
   }
   state.codex.contextBreakdownEstimated = false;
   state.codex.contextContributors = [];
-  state.codex.contextSuggestions = [];
   resetHistoryPaging();
   syncActionAvailability();
   renderChatThreadLine();
@@ -4245,81 +4245,378 @@ function renderContextStatus() {
 
 function renderContextInspector() {
   if (!els.contextUsageValue) return;
-  const usage = state.codex.tokenUsage || {};
-  const breakdown = hasCurrentContextBreakdown() ? state.codex.contextBreakdown || [] : [];
-  const hasUsage = usage.used !== null && usage.used !== undefined;
-  const hasWindow = usage.windowTokens !== null && usage.windowTokens !== undefined;
+  const summary = buildContextSummary();
+  renderContextHealth(summary);
+  renderContextEmptyState(summary);
+  renderContextCategories(summary);
+  renderContextContributorGroups(summary);
+}
 
-  if (hasUsage && hasWindow) {
-    els.contextUsageValue.textContent = `${formatCompactNumber(usage.used)} / ${formatCompactNumber(usage.windowTokens)} tokens${state.codex.contextBreakdownEstimated ? " estimated" : ""}`;
-  } else if (hasUsage) {
-    els.contextUsageValue.textContent = `${formatCompactNumber(usage.used)} tokens${state.codex.contextBreakdownEstimated ? " estimated" : ""}`;
-  } else if (hasWindow) {
-    els.contextUsageValue.textContent = `${formatCompactNumber(usage.windowTokens)} window`;
+function buildContextSummary() {
+  const usage = state.codex.tokenUsage || {};
+  const rawCategories = hasCurrentContextBreakdown() ? state.codex.contextBreakdown || [] : [];
+  const rawContributors = hasCurrentContextBreakdown() ? state.codex.contextContributors || [] : [];
+  const normalizedCategories = rawCategories.map((item, index) => normalizeContextBreakdownItem(item, index)).filter(Boolean);
+  const categoryTokenTotal = normalizedCategories.reduce((sum, item) => sum + item.tokens, 0);
+  const estimatedTokens = firstNumber(usage.used, categoryTokenTotal || null);
+  const maxContextTokens = firstNumber(usage.windowTokens);
+  const totalForPercentage = estimatedTokens || categoryTokenTotal || 0;
+  const categories = aggregateContextCategories(normalizedCategories, totalForPercentage);
+  const contributors = rawContributors
+    .map((item, index) => normalizeContextBreakdownItem(item, index, "contributor"))
+    .filter(Boolean)
+    .sort((left, right) => right.tokens - left.tokens);
+  const usagePercentage =
+    estimatedTokens !== null && maxContextTokens !== null && maxContextTokens > 0 ? clamp((estimatedTokens / maxContextTokens) * 100, 0, 100) : null;
+  const hasDetailedAttribution = contributors.some((item) => hasUsefulContextAttribution(item));
+  return {
+    estimatedTokens,
+    maxContextTokens,
+    usagePercentage,
+    pressure: contextPressureLevel(usagePercentage, estimatedTokens, maxContextTokens),
+    estimated: Boolean(state.codex.contextBreakdownEstimated || usage.derived),
+    hasCoarseAttribution: categories.length > 0,
+    hasDetailedAttribution,
+    categories,
+    contributors,
+  };
+}
+
+function normalizeContextBreakdownItem(item, index, kind = "category") {
+  if (!item || typeof item !== "object") return null;
+  const tokens = Math.max(0, Number(item.tokens || item.tokenCount || item.token_count || 0));
+  if (!tokens) return null;
+  const category = normalizeContextCategory(item.category);
+  const rawLabel = optionalText(item.rawLabel) || optionalText(item.label) || optionalText(item.source) || category;
+  const command = optionalText(item.command) || commandFromContextText(rawLabel) || commandFromContextText(item.source);
+  const filePath = optionalText(item.filePath) || optionalText(item.file_path) || filePathFromContextText(rawLabel) || filePathFromContextText(item.source) || filePathFromCommand(command);
+  const tool = optionalText(item.tool);
+  const source = optionalText(item.source);
+  const label = getHumanReadableContextLabel({ ...item, category, rawLabel, command, filePath, tool, source });
+  const percentage = Number.isFinite(Number(item.percentage)) ? clamp(Number(item.percentage), 0, 100) : 0;
+  return {
+    id: String(item.id || `${kind}-${index}`),
+    label,
+    rawLabel,
+    category,
+    tokens,
+    percentage,
+    source,
+    tool,
+    command,
+    filePath,
+    canSummarize: Boolean(item.canSummarize || item.can_summarize || category === "tool_outputs"),
+    canExclude: Boolean(item.canExclude || item.can_exclude || category === "tool_outputs"),
+    canInspect: Boolean(item.canInspect || item.can_inspect || filePath || command),
+  };
+}
+
+function normalizeContextCategory(category) {
+  const value = String(category || "other").trim();
+  return value || "other";
+}
+
+function aggregateContextCategories(items, totalTokens) {
+  const buckets = new Map();
+  for (const item of items) {
+    const group = contextCategoryGroup(item.category);
+    const existing = buckets.get(group.id) || { ...group, category: group.id, tokens: 0, rawItems: [] };
+    existing.tokens += item.tokens;
+    existing.rawItems.push(item);
+    buckets.set(group.id, existing);
+  }
+  return [...buckets.values()]
+    .map((item) => ({
+      ...item,
+      percentage: totalTokens ? clamp((item.tokens / totalTokens) * 100, 0, 100) : 0,
+    }))
+    .sort((left, right) => right.tokens - left.tokens);
+}
+
+function contextCategoryGroup(category) {
+  const value = normalizeContextCategory(category);
+  if (value === "tool_outputs") {
+    return { id: "tool_outputs", label: "Tool outputs", description: "Command logs, tool results, and generated output." };
+  }
+  if (value === "user_messages" || value === "assistant_messages") {
+    return { id: "thread_messages", label: "Thread messages", description: "User messages and assistant replies in this thread." };
+  }
+  if (value === "agents") {
+    return { id: "agents", label: "AGENTS.md", description: "Project and user instructions loaded from AGENTS.md." };
+  }
+  if (value === "system" || value === "developer") {
+    return { id: "system_config", label: "System instructions", description: "System and developer instructions." };
+  }
+  if (value === "files" || value === "diffs") {
+    return { id: "files_diffs", label: "Files / diffs", description: "File context, changed files, and patch excerpts." };
+  }
+  return { id: "other", label: "Other", description: "Other context sources." };
+}
+
+function renderContextHealth(summary) {
+  const suffix = summary.estimated ? " estimated tokens" : " tokens";
+  if (summary.estimatedTokens !== null && summary.maxContextTokens !== null) {
+    els.contextUsageValue.textContent = `${formatCompactNumber(summary.estimatedTokens)} / ${formatCompactNumber(summary.maxContextTokens)}${suffix}`;
+  } else if (summary.estimatedTokens !== null) {
+    els.contextUsageValue.textContent = `${formatCompactNumber(summary.estimatedTokens)}${suffix}`;
+  } else if (summary.maxContextTokens !== null) {
+    els.contextUsageValue.textContent = `${formatCompactNumber(summary.maxContextTokens)} token window`;
   } else {
     els.contextUsageValue.textContent = "Unavailable";
   }
 
-  els.contextStackedBar.innerHTML = "";
-  els.contextLargestContributors.innerHTML = "";
-  els.contextSuggestions.innerHTML = "";
+  const pressureLabel = contextPressureLabel(summary.pressure);
+  const percentText = summary.usagePercentage !== null ? `${Math.round(summary.usagePercentage)}% used` : "Window size unavailable";
+  els.contextPressureValue.textContent = pressureLabel;
+  els.contextPressureValue.className = `context-pressure ${summary.pressure}`;
+  els.contextHealthMeta.textContent =
+    summary.usagePercentage !== null
+      ? `${percentText} · ${pressureLabel}`
+      : summary.estimatedTokens !== null
+        ? `Window size unavailable · ${pressureLabel.toLowerCase()} inferred from estimated tokens`
+        : "Waiting for context usage data.";
+  const meterPercent = summary.usagePercentage !== null ? summary.usagePercentage : contextPressureFallbackPercent(summary.pressure);
+  els.contextHealthBar.style.width = `${meterPercent}%`;
+  els.contextHealthBar.className = summary.pressure;
+  els.contextHealthNote.textContent = contextHealthNote(summary);
+}
 
-  if (!breakdown.length) {
-    els.contextBreakdownEmpty.hidden = false;
+function renderContextEmptyState(summary) {
+  const unavailable = !summary.hasCoarseAttribution;
+  els.contextBreakdownEmpty.hidden = !unavailable;
+  if (els.contextCategoriesSection) els.contextCategoriesSection.hidden = unavailable;
+}
+
+function renderContextCategories(summary) {
+  els.contextCategoryRows.innerHTML = "";
+  els.contextStackedBar.innerHTML = "";
+  if (!summary.hasCoarseAttribution) {
     els.contextStackedBar.hidden = true;
-    els.contextLargestContributors.innerHTML = '<span class="sidebar-empty">No attribution data available.</span>';
-    els.contextSuggestions.innerHTML = '<span class="sidebar-empty">Suggestions will appear when token attribution is available.</span>';
     return;
   }
-
-  els.contextBreakdownEmpty.hidden = true;
   els.contextStackedBar.hidden = false;
-  const sorted = [...breakdown].sort((left, right) => right.tokens - left.tokens);
-  for (const item of sorted) {
+  for (const item of summary.categories) {
+    const row = document.createElement("div");
+    row.className = "context-category-row";
+    row.innerHTML = `
+      <span class="context-category-name">${escapeHtml(item.label)}</span>
+      <strong>${escapeHtml(formatCompactNumber(item.tokens))} tokens</strong>
+      <span class="context-percent">${escapeHtml(formatPercent(item.percentage))}</span>
+      <span class="context-row-bar"><i class="${contextCategoryClass(item.category)}" style="width: ${Math.max(2, item.percentage)}%"></i></span>
+    `;
+    els.contextCategoryRows.appendChild(row);
+
     const segment = document.createElement("span");
     segment.className = `context-segment ${contextCategoryClass(item.category)}`;
-    segment.style.width = `${Math.max(3, item.percentage)}%`;
-    segment.title = `${item.label}: ${formatCompactNumber(item.tokens)} tokens`;
-    segment.textContent = `${item.label} ${Math.round(item.percentage)}%`;
+    segment.style.width = `${Math.max(1, item.percentage)}%`;
+    segment.title = `${item.label}: ${formatCompactNumber(item.tokens)} tokens · ${formatPercent(item.percentage)}`;
+    segment.textContent = item.percentage >= 14 ? `${item.label} ${formatPercent(item.percentage)}` : "";
     els.contextStackedBar.appendChild(segment);
   }
+}
 
-  const contributors = state.codex.contextContributors.length ? state.codex.contextContributors : sorted.slice(0, 5);
-  contributors.slice(0, 5).forEach((item, index) => {
-    const row = document.createElement("div");
-    row.className = "context-list-row";
-    row.innerHTML = `<span>${index + 1}. ${escapeHtml(item.label)}</span><strong>${escapeHtml(formatCompactNumber(item.tokens))} tokens</strong>`;
-    els.contextLargestContributors.appendChild(row);
-  });
-
-  const suggestions = state.codex.contextSuggestions.length ? state.codex.contextSuggestions : contextSuggestionsFromBreakdown(sorted);
-  if (!suggestions.length) {
-    els.contextSuggestions.innerHTML = '<span class="sidebar-empty">No context pressure detected.</span>';
+function renderContextContributorGroups(summary) {
+  els.contextLargestContributors.innerHTML = "";
+  if (!summary.hasCoarseAttribution) {
+    els.contextLargestContributors.innerHTML = '<div class="details-empty compact-empty">No attribution data available.</div>';
     return;
   }
-  for (const suggestion of suggestions) {
-    const row = document.createElement("div");
-    row.className = "context-suggestion";
-    row.textContent = suggestion;
-    els.contextSuggestions.appendChild(row);
+  if (!summary.hasDetailedAttribution) {
+    const notice = document.createElement("div");
+    notice.className = "details-empty compact-empty context-detail-notice";
+    notice.innerHTML = "<strong>Detailed contributors unavailable</strong><span>Showing coarse category estimates only. Command-level and file-level attribution is not available yet.</span>";
+    els.contextLargestContributors.appendChild(notice);
   }
+
+  const contributorsByGroup = groupContextContributors(summary.contributors);
+  const groups = summary.categories.slice(0, 4);
+  for (const category of groups) {
+    const items = (contributorsByGroup.get(category.category) || []).slice(0, 5);
+    const card = document.createElement("article");
+    card.className = "context-contributor-card";
+    card.innerHTML = `
+      <div class="context-contributor-head">
+        <div>
+          <strong>${escapeHtml(category.label)}</strong>
+          <span>${escapeHtml(formatCompactNumber(category.tokens))} tokens · ${escapeHtml(formatPercent(category.percentage))} of context</span>
+        </div>
+      </div>
+      <p>${escapeHtml(contextGroupDescription(category, items))}</p>
+      ${items.length ? contextContributorListHtml(items) : '<div class="sidebar-empty">Detailed contributors are not available for this category.</div>'}
+    `;
+    els.contextLargestContributors.appendChild(card);
+  }
+}
+
+function getHumanReadableContextLabel(item) {
+  const category = normalizeContextCategory(item.category);
+  const command = optionalText(item.command);
+  const filePath = optionalText(item.filePath);
+  const tool = optionalText(item.tool);
+  const raw = optionalText(item.rawLabel || item.label);
+  if (command) return contextCommandLabel(command, filePath);
+  if (category === "agents") return filePath ? `AGENTS.md: ${relativeProjectPath(filePath)}` : "Project AGENTS.md";
+  if (category === "files") return filePath ? `File context: ${relativeProjectPath(filePath)}` : "File context";
+  if (category === "diffs") return filePath ? `Diff: ${relativeProjectPath(filePath)}` : "File diff";
+  if (category === "user_messages") return "User message";
+  if (category === "assistant_messages") return "Assistant reply";
+  if (category === "system") return "System prompt";
+  if (category === "developer") return "Developer instructions";
+  if (category === "tool_outputs") {
+    if (tool === "view_image" && filePath) return `image preview: ${relativeProjectPath(filePath)}`;
+    if (tool === "imagegen" || tool === "image_generation") return "image generation output";
+    if (tool === "apply_patch") return "patch application output";
+    if (tool && !isInternalContextLabel(tool)) return `${tool.replace(/[_-]+/g, " ")} output`;
+    if (raw && !isInternalContextLabel(raw)) return raw.replace(/^Tool output:\s*/i, "");
+    return "Command output";
+  }
+  return raw && !isInternalContextLabel(raw) ? `${contextCategoryGroup(category).label} · ${raw}` : contextCategoryGroup(category).label;
+}
+
+function contextCommandLabel(command, filePath = "") {
+  const normalized = stripShellWrapper(command).trim().replace(/\s+/g, " ");
+  const path = filePath ? relativeProjectPath(filePath) : "";
+  if (!normalized) return "Command output";
+  if (/\b(pytest|py\.test)\b/.test(normalized)) return "pytest output";
+  if (/^(npm|pnpm|yarn)\s+install\b/.test(normalized)) return "package install log";
+  if (/^git\s+diff\b/.test(normalized)) return path ? `git diff: ${path}` : "git diff output";
+  if (/^git\s+show\b/.test(normalized)) return path ? `git show: ${path}` : "git show output";
+  if (/^(rg|grep)\b/.test(normalized)) return searchOutputLabel(normalized);
+  if (/^node\s+--check\b/.test(normalized)) return path ? `node --check: ${path}` : "node syntax check output";
+  if (/py_compile\b/.test(normalized)) return "python compile check output";
+  if (/^(cat|sed|awk|head|tail|find|ls|tree)\b/.test(normalized)) {
+    const name = normalized.split(/\s+/)[0];
+    return path ? `${name}: ${path}` : `${name} output`;
+  }
+  return `${conciseCommand(normalized)} output`;
+}
+
+function searchOutputLabel(command) {
+  const pattern = command.match(/(?:rg|grep)(?:\s+-\S+)*\s+(['"])(.*?)\1/);
+  return pattern?.[2] ? `search results: ${truncateMiddle(pattern[2], 42)}` : "search output";
+}
+
+function commandFromContextText(value) {
+  const text = optionalText(value);
+  if (!text) return "";
+  const command = text.match(/(?:Tool output:\s*)?((?:git|rg|grep|npm|pnpm|yarn|pytest|python3?|node|cat|sed|awk|head|tail|find|ls|tree)\b[^\n]*)/i);
+  return command ? command[1].trim() : "";
+}
+
+function filePathFromContextText(value) {
+  const text = optionalText(value);
+  if (!text) return "";
+  const match = text.match(/(?:^|[\s:])((?:~|\/|\w)[\w./-]*\.(?:js|ts|tsx|jsx|py|md|json|css|html|yml|yaml|toml|sh|cpp|h|hpp|rs|go))/);
+  return match ? match[1] : "";
+}
+
+function filePathFromCommand(command) {
+  const text = stripShellWrapper(command).trim();
+  if (!text) return "";
+  const afterDoubleDash = text.includes(" -- ") ? text.split(" -- ").pop() || "" : text;
+  const matches = [...afterDoubleDash.matchAll(/(?:^|\s)([A-Za-z0-9_./~-]+\.(?:js|ts|tsx|jsx|py|md|json|css|html|yml|yaml|toml|sh|cpp|h|hpp|rs|go))(?:\s|$)/g)];
+  return matches.length ? matches[matches.length - 1][1] : "";
+}
+
+function isInternalContextLabel(label) {
+  return /^(function_call_output|commandExecution|mcpToolCall|dynamicToolCall|response_item\.|event_msg|message)$/i.test(String(label || "").trim());
+}
+
+function hasUsefulContextAttribution(item) {
+  if (!item) return false;
+  if (item.command || item.filePath) return true;
+  return item.label && !isInternalContextLabel(item.label) && item.label !== "Command output";
+}
+
+function contextPressureLevel(usagePercentage, estimatedTokens, maxContextTokens) {
+  if (usagePercentage !== null) {
+    if (usagePercentage > 90) return "critical";
+    if (usagePercentage >= 70) return "high";
+    if (usagePercentage >= 40) return "medium";
+    return "low";
+  }
+  if (estimatedTokens === null) return "unknown";
+  if (estimatedTokens >= 300000) return "critical";
+  if (estimatedTokens >= 150000) return "high";
+  if (estimatedTokens >= 50000) return "medium";
+  return maxContextTokens === null ? "unknown" : "low";
+}
+
+function contextPressureLabel(pressure) {
+  return (
+    {
+      low: "Low context pressure",
+      medium: "Medium context pressure",
+      high: "High context pressure",
+      critical: "Critical context pressure",
+      unknown: "Unknown pressure",
+    }[pressure] || "Unknown pressure"
+  );
+}
+
+function contextPressureFallbackPercent(pressure) {
+  return { low: 24, medium: 52, high: 76, critical: 94, unknown: 0 }[pressure] || 0;
+}
+
+function contextHealthNote(summary) {
+  const top = summary.categories[0];
+  if (!summary.estimatedTokens) return "Send or resume a thread to collect context usage.";
+  if (top?.category === "tool_outputs" && top.percentage >= 50) return "Large tool outputs may reduce answer quality and increase latency.";
+  if (summary.pressure === "critical") return "Context is close to the model window. Compact or summarize before continuing complex work.";
+  if (summary.pressure === "high") return "Context is getting heavy. Review the largest contributors before long follow-up tasks.";
+  if (summary.maxContextTokens === null) return "Window size is unavailable, so pressure is inferred from estimated tokens only.";
+  return "Context usage is within a manageable range.";
+}
+
+function groupContextContributors(contributors) {
+  const groups = new Map();
+  for (const item of contributors) {
+    const group = contextCategoryGroup(item.category).id;
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(item);
+  }
+  for (const items of groups.values()) items.sort((left, right) => right.tokens - left.tokens);
+  return groups;
+}
+
+function contextContributorListHtml(items) {
+  return `
+    <ol class="context-contributor-list">
+      ${items
+        .map(
+          (item) => `
+            <li>
+              <span>${escapeHtml(item.label)}</span>
+              <strong>${escapeHtml(formatCompactNumber(item.tokens))}</strong>
+            </li>
+          `,
+        )
+        .join("")}
+    </ol>
+  `;
+}
+
+function contextGroupDescription(category, items) {
+  if (category.category === "tool_outputs") {
+    if (items.some((item) => /diff/i.test(item.label))) return "Mostly command logs, diffs, and tool results.";
+    return "Mostly command logs and tool results.";
+  }
+  if (category.category === "thread_messages") return "Conversation turns retained in the current context.";
+  if (category.category === "system_config") return "System prompt and developer instructions.";
+  if (category.category === "agents") return "Project guidance loaded from AGENTS.md.";
+  if (category.category === "files_diffs") return "File previews, changed-file summaries, and patch excerpts.";
+  return category.description || "Context sources grouped by category.";
+}
+
+function formatPercent(value) {
+  const number = Number(value || 0);
+  if (number > 0 && number < 1) return "<1%";
+  return `${Math.round(number)}%`;
 }
 
 function contextCategoryClass(category) {
   const value = String(category || "other").replace(/[^a-z0-9_-]/gi, "-").toLowerCase();
   return `category-${value}`;
-}
-
-function contextSuggestionsFromBreakdown(items) {
-  const suggestions = [];
-  const byCategory = new Map();
-  for (const item of items) byCategory.set(item.category, (byCategory.get(item.category) || 0) + item.percentage);
-  if ((byCategory.get("tool_outputs") || 0) >= 20) suggestions.push("Tool output is large. Consider summarizing command logs.");
-  if ((byCategory.get("agents") || 0) >= 20) suggestions.push("Project AGENTS.md is a large context contributor. Consider moving stable preferences to global AGENTS.md.");
-  const conversation = (byCategory.get("user_messages") || 0) + (byCategory.get("assistant_messages") || 0);
-  if (conversation >= 45) suggestions.push("This thread is long. Consider compacting older turns.");
-  if ((byCategory.get("files") || 0) + (byCategory.get("diffs") || 0) >= 20) suggestions.push("Files and diffs are prominent. Keep only the relevant patch or file excerpts in context.");
-  return suggestions;
 }
 
 function contextPercentUsed(tokens, windowTokens) {

@@ -184,19 +184,57 @@
 
               <section class="inspector-panel" id="detailsPanelContext" data-details-panel="context" hidden>
                 <div class="context-panel">
-                  <div class="context-usage">
-                    <span>Context usage</span>
-                    <strong id="contextUsageValue">Unavailable</strong>
+                  <div class="context-health-card" id="contextHealthCard">
+                    <div class="context-section-header">
+                      <h4>Context health</h4>
+                      <span class="context-pressure" id="contextPressureValue">Unknown</span>
+                    </div>
+                    <strong id="contextUsageValue" class="context-health-value">Unavailable</strong>
+                    <p id="contextHealthMeta" class="context-health-meta">Waiting for context usage data.</p>
+                    <div class="context-health-meter" aria-hidden="true">
+                      <span id="contextHealthBar"></span>
+                    </div>
+                    <p id="contextHealthNote" class="context-health-note">Detailed context attribution will appear after the thread has enough indexed activity.</p>
                   </div>
-                  <div class="context-stacked-bar" id="contextStackedBar"></div>
-                  <div id="contextBreakdownEmpty" class="details-empty compact-empty">Context breakdown unavailable<br />Token attribution is not available for this thread yet.</div>
+
+                  <div id="contextBreakdownEmpty" class="details-empty context-empty-state">
+                    <strong>Context breakdown unavailable</strong>
+                    <span>We can estimate total context usage, but detailed source attribution is not available for this thread yet.</span>
+                    <div class="context-empty-grid">
+                      <div>
+                        <b>Available now</b>
+                        <ul>
+                          <li>Estimated total tokens</li>
+                          <li>Thread status</li>
+                          <li>Changed files</li>
+                        </ul>
+                      </div>
+                      <div>
+                        <b>Unavailable</b>
+                        <ul>
+                          <li>Exact per-source token breakdown</li>
+                          <li>Largest contributor attribution</li>
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="context-section" id="contextCategoriesSection">
+                    <div class="context-section-header">
+                      <h4>Top categories</h4>
+                    </div>
+                    <div id="contextCategoryRows" class="context-category-list"></div>
+                    <div class="context-mix">
+                      <span>Category mix</span>
+                      <div class="context-stacked-bar" id="contextStackedBar"></div>
+                    </div>
+                  </div>
+
                   <div class="context-section">
-                    <h4>Largest context contributors</h4>
+                    <div class="context-section-header">
+                      <h4>Largest contributors</h4>
+                    </div>
                     <div id="contextLargestContributors" class="context-list"></div>
-                  </div>
-                  <div class="context-section">
-                    <h4>Suggestions</h4>
-                    <div id="contextSuggestions" class="context-list"></div>
                   </div>
                 </div>
               </section>
