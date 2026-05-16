@@ -4805,6 +4805,7 @@ function renderWorkingIndicator() {
   const indicator = els.chatWorkingIndicator;
   if (!indicator) return;
   const shell = indicator.closest(".chat-log-shell");
+  const shouldStickToBottom = chatAtBottom();
   const show = Boolean(
     state.codex.threadId &&
       currentSessionStatus() === "Working" &&
@@ -4824,6 +4825,9 @@ function renderWorkingIndicator() {
   const detail = indicator.querySelector("span:last-child");
   if (title) title.textContent = copy.title;
   if (detail) detail.textContent = copy.detail;
+  if (shouldStickToBottom) {
+    window.requestAnimationFrame(() => scrollChatToBottom());
+  }
 }
 
 function workingIndicatorCopy() {

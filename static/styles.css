@@ -2551,6 +2551,7 @@ tbody tr:last-child td {
 .chat-log-shell {
   background: var(--bg-app);
   display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   position: relative;
@@ -2563,15 +2564,6 @@ tbody tr:last-child td {
   min-height: 0;
   overflow: auto;
   padding: 24px;
-  transition: padding-bottom 140ms ease;
-}
-
-.chat-log-shell.working-indicator-visible .chat-log {
-  padding-bottom: 86px;
-}
-
-.chat-log-shell.working-indicator-compact .chat-log {
-  padding-bottom: 68px;
 }
 
 .message-jump-nav {
@@ -2594,17 +2586,16 @@ tbody tr:last-child td {
   background: rgb(255 255 255 / 94%);
   border: 1px solid #cfd8e3;
   border-radius: 999px;
-  bottom: 14px;
   box-shadow: 0 10px 26px rgb(15 23 42 / 12%);
   color: var(--text);
   display: inline-flex;
+  flex: 0 0 auto;
   gap: 10px;
-  left: 50%;
+  margin: 0 auto 14px;
   max-width: min(680px, calc(100% - 48px));
   min-height: 42px;
   padding: 8px 14px 8px 12px;
-  position: absolute;
-  transform: translateX(-50%);
+  position: relative;
   z-index: 4;
 }
 
