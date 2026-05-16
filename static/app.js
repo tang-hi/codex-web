@@ -2544,6 +2544,8 @@ function syncToolSidebarState(item, lifecycle) {
         kind: change.kind || "modify",
       })),
     );
+  } else if (item.type === "fileChange" && item.diff) {
+    setChangedFiles(parseDiffFiles(item.diff));
   }
   renderActivitySidebar();
 }
@@ -2597,15 +2599,20 @@ function renderFileChangePatch(params) {
   const diff = params.diff || params.unifiedDiff || params.unified_diff || params.patch?.diff || params.patch?.unified_diff || "";
 
   if (changes.length) {
+    const itemId = params.itemId || params.id || item?.id || "file-change";
     upsertCodexItem(
       {
-        id: params.itemId || params.id || item?.id || "file-change",
+        id: itemId,
         type: "fileChange",
         status: params.status || "inProgress",
         changes,
+        diff,
       },
       "started",
     );
+    if (diff) {
+      state.codex.latestDiff = diff;
+    }
     return;
   }
 
@@ -2619,15 +2626,16 @@ function renderDiffCard(diff, title = "Diff") {
   const text = String(diff || "").trim();
   if (!text) return;
   setChangedFiles(parseDiffFiles(text));
-  const diffHtml = diffToHtml(text);
+  const diffHtml = diffSectionsHtml(text);
 
   let card = document.getElementById("latest-diff-card");
   if (!card) {
     card = document.createElement("article");
     card.id = "latest-diff-card";
-    card.className = "tool-card completed";
+    card.className = "tool-card diff-card completed";
     els.chatLog.appendChild(card);
   }
+  card.className = "tool-card diff-card completed";
   card.innerHTML = `
     <div class="tool-title">
       <span>${escapeHtml(codeChangeTitle(title, state.codex.changedFiles))}</span>
@@ -2637,7 +2645,7 @@ function renderDiffCard(diff, title = "Diff") {
       </div>
       <em>${formatNumber(text.split("\n").length)} lines</em>
     </div>
-    <details class="diff-details"><summary>Full diff</summary>${diffHtml}</details>
+    <div class="diff-inline" aria-label="File changes">${diffHtml}</div>
   `;
   scrollChatToBottom();
 }
@@ -2691,6 +2699,7 @@ function toolItemHtml(item, lifecycle) {
     const command = stripShellWrapper(item.command || "");
     const noOutput = lifecycle === "completed" && !output && isSuccessStatus(status);
     const running = isRunningStatus(status);
+    const showOutputOpen = running || isDiffLikeOutput(output, command);
     const summary = commandSummary(item, status, output);
     return `
       <div class="tool-title">
@@ -2702,8 +2711,8 @@ function toolItemHtml(item, lifecycle) {
         <em>${escapeHtml(commandMeta(item, status))}</em>
       </div>
       <div class="tool-summary">${escapeHtml(summary)}</div>
-      <details class="command-details" ${running ? "open" : ""}>
-        <summary>${escapeHtml(running ? "Running command" : "Command log")}</summary>
+      <details class="command-details" ${showOutputOpen ? "open" : ""}>
+        <summary>${escapeHtml(running ? "Running command" : isDiffLikeOutput(output, command) ? "Command diff" : "Command log")}</summary>
         ${item.cwd ? `<div class="tool-subtitle">${escapeHtml(shortPath(item.cwd))}</div>` : ""}
         <pre class="command-line">$ ${escapeHtml(command)}</pre>
         ${output ? commandOutputHtml(output, command) : noOutput ? '<div class="tool-empty">(no output)</div>' : ""}
@@ -2713,20 +2722,23 @@ function toolItemHtml(item, lifecycle) {
   if (item.type === "fileChange") {
     const changeItems = item.changes || [];
     const primaryPath = changeItems[0]?.path || "";
-    const combinedDiff = changeItems.map((change) => change.diff || "").filter(Boolean).join("\n\n");
+    const itemDiff = item.diff || "";
+    const combinedDiff = itemDiff || changeItems.map((change) => change.diff || "").filter(Boolean).join("\n\n");
     const changes = (item.changes || [])
       .map(
         (change) =>
           `<li title="${escapeAttr(change.path || "")}"><strong>${escapeHtml(fileChangeVerb(change.kind))}</strong> ${escapeHtml(relativeProjectPath(change.path || ""))}</li>`,
       )
       .join("");
-    const diffs = (item.changes || [])
-      .map((change) =>
-        change.diff
-          ? `<details class="diff-details"><summary>${escapeHtml(relativeProjectPath(change.path || "diff"))}</summary>${diffToHtml(change.diff)}</details>`
-          : "",
-      )
-      .join("");
+    const diffs = itemDiff
+      ? diffSectionsHtml(itemDiff)
+      : (item.changes || [])
+          .map((change) =>
+            change.diff
+              ? `<section class="diff-file"><div class="diff-file-header"><span class="diff-file-path">${escapeHtml(relativeProjectPath(change.path || "diff"))}</span></div>${diffToHtml(change.diff)}</section>`
+              : "",
+          )
+          .join("");
     return `
       <div class="tool-title">
         <span>${escapeHtml(codeChangeTitle("Patch", changeItems))}</span>
@@ -2737,8 +2749,7 @@ function toolItemHtml(item, lifecycle) {
         </div>
         <em>${escapeHtml(statusLabel(status))}</em>
       </div>
-      ${changes ? `<ul class="change-list">${changes}</ul>` : '<div class="tool-empty">(no file changes)</div>'}
-      ${diffs}
+      ${diffs ? `<div class="diff-inline" aria-label="File changes">${diffs}</div>` : changes ? `<ul class="change-list">${changes}</ul><div class="tool-empty diff-unavailable">Diff unavailable for this file change.</div>` : '<div class="tool-empty">(no file changes)</div>'}
     `;
   }
   if (item.type === "mcpToolCall") {
@@ -2791,12 +2802,16 @@ function renderCommandOutput(card, output, command) {
   const html = commandOutputHtml(output, command);
   if (existing) {
     existing.outerHTML = html;
+    const details = card.querySelector(".command-details");
+    if (details && isDiffLikeOutput(output, command)) details.open = true;
     return;
   }
   const commandLine = card.querySelector(".command-line");
   if (commandLine) {
     commandLine.insertAdjacentHTML("afterend", html);
   }
+  const details = card.querySelector(".command-details");
+  if (details && isDiffLikeOutput(output, command)) details.open = true;
 }
 
 function commandFromCard(card) {
@@ -2805,6 +2820,15 @@ function commandFromCard(card) {
 }
 
 function commandOutputHtml(output, command) {
+  if (isDiffLikeOutput(output, command)) {
+    const text = String(output || "").trim();
+    return `
+      <div class="tool-output-wrap diff-output">
+        <div class="tool-output-meta">Unified diff · ${formatNumber(splitOutputLines(text).length)} lines</div>
+        ${diffSectionsHtml(text)}
+      </div>
+    `;
+  }
   const preview = commandOutputPreview(output, command);
   const classes = ["tool-output-wrap", preview.truncated ? "truncated" : ""].filter(Boolean).join(" ");
   const label = preview.truncated ? commandOutputMeta(preview) : `${formatNumber(preview.totalLines)} output lines`;
@@ -2882,10 +2906,90 @@ function splitOutputLines(output) {
   return text ? text.split("\n") : [];
 }
 
-function diffToHtml(diff) {
+function isDiffLikeOutput(output, command = "") {
+  const text = String(output || "");
+  if (!text.trim()) return false;
+  if (isUnifiedDiffText(text)) return true;
+  const normalized = String(command || "").trim();
+  return /^git\s+(diff|show)\b/.test(normalized) && /^(diff --git|@@\s|---\s|\+\+\+\s)/m.test(text);
+}
+
+function isUnifiedDiffText(text) {
+  const value = String(text || "");
+  if (/^diff --git\s/m.test(value)) return true;
+  return /^---\s/m.test(value) && /^\+\+\+\s/m.test(value) && /^@@\s/m.test(value);
+}
+
+function diffSectionsHtml(diff) {
+  const sections = splitUnifiedDiffByFile(diff);
+  return sections
+    .map((section) => {
+      const path = diffSectionPath(section);
+      const meta = section.lines.length ? `${formatNumber(section.lines.length)} lines` : "";
+      return `
+        <section class="diff-file">
+          <div class="diff-file-header">
+            <span class="diff-file-path">${escapeHtml(path)}</span>
+            ${meta ? `<span class="diff-file-meta">${escapeHtml(meta)}</span>` : ""}
+          </div>
+          ${diffToHtml(section.lines.join("\n"))}
+        </section>
+      `;
+    })
+    .join("");
+}
+
+function splitUnifiedDiffByFile(diff) {
+  const lines = splitOutputLines(String(diff || "").trim());
+  const sections = [];
+  let current = null;
+  let preamble = [];
+
+  for (const line of lines) {
+    if (line.startsWith("diff --git ")) {
+      if (current) {
+        sections.push(current);
+      } else if (preamble.length) {
+        sections.push({ path: "Diff", lines: preamble });
+        preamble = [];
+      }
+      current = { path: pathFromDiffGitLine(line), lines: [line] };
+      continue;
+    }
+
+    if (current) {
+      current.lines.push(line);
+    } else {
+      preamble.push(line);
+    }
+  }
+
+  if (current) sections.push(current);
+  if (preamble.length) sections.push({ path: pathFromDiffHeaderLines(preamble) || "Diff", lines: preamble });
+  return sections.length ? sections : [{ path: "Diff", lines }];
+}
+
+function pathFromDiffGitLine(line) {
+  const match = String(line || "").match(/^diff --git a\/(.+?) b\/(.+)$/);
+  return match ? match[2] || match[1] : "Diff";
+}
+
+function pathFromDiffHeaderLines(lines) {
+  const plus = lines.find((line) => line.startsWith("+++ "));
+  if (!plus) return "";
+  return plus.replace(/^\+\+\+\s+/, "").replace(/^b\//, "");
+}
+
+function diffSectionPath(section) {
+  const path = section.path || pathFromDiffHeaderLines(section.lines || []) || "Diff";
+  if (path === "/dev/null" || path === "Diff") return path;
+  return relativeProjectPath(path);
+}
+
+function diffToHtml(diff, maxLines = 700) {
   const text = String(diff || "").trim();
   if (!text) return "";
-  const lines = truncateLinesMiddle(text.split("\n"), 180);
+  const lines = truncateLinesMiddle(text.split("\n"), maxLines);
   const body = lines.map((line) => `<span class="diff-line ${diffLineClass(line)}">${escapeHtml(line)}</span>`).join("");
   return `<pre class="codex-diff" aria-label="Unified diff">${body}</pre>`;
 }
@@ -2895,7 +2999,7 @@ function shouldRenderToolItem(item, lifecycle) {
     return Boolean(item.command || state.codex.commandOutputs[item.id] || lifecycle === "completed");
   }
   if (item.type === "fileChange") {
-    return lifecycle === "started" || lifecycle === "completed" || (item.changes || []).length > 0;
+    return lifecycle === "started" || lifecycle === "completed" || (item.changes || []).length > 0 || Boolean(item.diff);
   }
   return [
     "mcpToolCall",
@@ -4742,9 +4846,14 @@ els.chatLog.addEventListener("click", (event) => {
     const card = collapseButton.closest(".tool-card");
     if (!card) return;
     const details = [...card.querySelectorAll("details")];
-    const anyOpen = details.some((item) => item.open);
-    for (const item of details) item.open = !anyOpen;
-    collapseButton.textContent = anyOpen ? "Show details" : "Collapse";
+    if (details.length) {
+      const anyOpen = details.some((item) => item.open);
+      for (const item of details) item.open = !anyOpen;
+      collapseButton.textContent = anyOpen ? "Show details" : "Collapse";
+      return;
+    }
+    const collapsed = card.classList.toggle("collapsed");
+    collapseButton.textContent = collapsed ? "Show details" : "Collapse";
   }
 });
 els.chatLog.addEventListener(

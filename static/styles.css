@@ -2673,6 +2673,48 @@ tbody tr:last-child td {
   margin: 4px 0;
 }
 
+.diff-inline {
+  display: grid;
+  gap: 10px;
+}
+
+.diff-file {
+  border: 1px solid var(--code-line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.diff-file-header {
+  align-items: center;
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--code-line);
+  color: var(--muted);
+  display: flex;
+  font-family: "Maple Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  gap: 10px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 7px 10px;
+}
+
+.diff-file-path {
+  color: var(--text);
+  font-weight: 650;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-file-meta {
+  flex: 0 0 auto;
+}
+
+.diff-unavailable {
+  margin-top: 8px;
+}
+
 .plan-card p {
   color: var(--muted);
   margin: 0 0 8px;
@@ -2731,13 +2773,13 @@ tbody tr:last-child td {
 
 .codex-diff {
   background: #fbfcfd;
-  border: 1px solid var(--code-line);
-  border-radius: 6px;
+  border: 0;
+  border-radius: 0;
   color: var(--text);
   font-family: "Maple Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   line-height: 1.45;
-  margin: 8px 0 0;
+  margin: 0;
   max-width: 100%;
   overflow: auto;
   padding: 6px 0;
