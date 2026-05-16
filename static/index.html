@@ -21,9 +21,20 @@
       <header class="app-header">
         <div class="app-brand">
           <h1>Codex Web</h1>
-          <div class="workspace-chip" title="Loading workspace...">
-            <span>Workspace</span>
-            <strong id="appWorkspace">Loading...</strong>
+          <div class="workspace-picker choice-control">
+            <button
+              id="workspaceSwitch"
+              class="workspace-chip"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded="false"
+              title="Workspace: Loading..."
+            >
+              <span>Workspace:</span>
+              <strong id="appWorkspace">Loading...</strong>
+              <em aria-hidden="true">▾</em>
+            </button>
+            <div id="workspaceMenu" class="choice-menu workspace-menu" role="menu" hidden></div>
           </div>
         </div>
         <div class="header-actions">
@@ -40,7 +51,7 @@
                   <h3>Sessions</h3>
                   <span id="sidebarThreadCount" class="count-badge">0</span>
                 </div>
-                <button id="sidebarNewThread" class="button-ghost compact-button" type="button">New</button>
+                <button id="sidebarNewThread" class="button-primary sidebar-new-button" type="button">+ New</button>
               </div>
               <label class="thread-search">
                 <span class="sr-only">Search active threads</span>
@@ -59,17 +70,17 @@
             <div class="chat-title">
               <div class="chat-title-line">
                 <h2 id="chatThreadTitle">New thread</h2>
-                <button id="chatHeaderRename" class="icon-button title-action" type="button" title="Rename thread" disabled>Rename</button>
+                <button id="chatHeaderRename" class="icon-button title-action" type="button" title="Rename thread" aria-label="Rename thread" disabled>✎</button>
               </div>
               <div class="chat-summary-line" id="chatSummaryLine">
                 <span id="chatPrimaryStatus">Idle</span>
-                <span id="chatPrimaryContext">Context waiting</span>
                 <span id="chatPrimaryModel">Loading...</span>
-                <span id="chatPrimaryCwd">No directory</span>
+                <span id="chatPrimaryContext">Context pending</span>
               </div>
+              <div class="chat-cwd-line" id="chatPrimaryCwd">No directory</div>
             </div>
             <div class="chat-actions">
-              <button id="newCodexThread" class="button-secondary" type="button">New Thread</button>
+              <button id="newCodexThread" class="button-secondary" type="button" hidden>New Thread</button>
               <button id="detailsToggle" class="button-ghost" type="button" aria-expanded="true">Hide details</button>
               <button id="interruptCodexTurn" class="button-danger" type="button" disabled hidden>Interrupt</button>
             </div>
@@ -93,9 +104,33 @@
             <div class="composer-content">
               <div class="composer-surface">
                 <div class="composer-tools" id="composerTools" aria-label="Thread actions">
-                  <button id="compactThread" class="tool-chip" type="button" disabled>Compact</button>
-                  <button id="reviewThread" class="tool-chip" type="button" disabled>Review</button>
-                  <button id="forkThread" class="tool-chip" type="button" disabled>Fork</button>
+                  <button
+                    id="compactThread"
+                    class="tool-chip"
+                    type="button"
+                    title="Summarize older turns so this thread uses less context. You will be asked to confirm."
+                    disabled
+                  >
+                    Compact context
+                  </button>
+                  <button
+                    id="reviewThread"
+                    class="tool-chip"
+                    type="button"
+                    title="Ask Codex to review the current code and file changes in this thread."
+                    disabled
+                  >
+                    Review changes
+                  </button>
+                  <button
+                    id="forkThread"
+                    class="tool-chip"
+                    type="button"
+                    title="Start a new thread from the current thread state."
+                    disabled
+                  >
+                    Fork thread
+                  </button>
                   <div class="more-action">
                     <button
                       id="moreThreadActions"
@@ -103,16 +138,17 @@
                       type="button"
                       aria-haspopup="menu"
                       aria-expanded="false"
+                      title="More thread actions: rollback, rename, archive, hide, or shell command."
                       disabled
                     >
                       More
                     </button>
                     <div id="moreThreadActionsMenu" class="composer-action-menu" role="menu" hidden>
-                      <button type="button" data-thread-action="rollback" role="menuitem">Rollback last turn</button>
-                      <button type="button" data-thread-action="rename" role="menuitem">Rename thread</button>
-                      <button type="button" data-thread-action="archive" role="menuitem">Archive thread</button>
-                      <button type="button" data-thread-action="hide" role="menuitem">Hide from sidebar</button>
-                      <button type="button" data-thread-action="shell" role="menuitem">Shell command</button>
+                      <button type="button" data-thread-action="rollback" role="menuitem" title="Undo the last completed turn in this thread.">Rollback last turn</button>
+                      <button type="button" data-thread-action="rename" role="menuitem" title="Rename this thread locally.">Rename thread</button>
+                      <button type="button" data-thread-action="archive" role="menuitem" title="Move this thread out of the default sidebar list.">Archive thread</button>
+                      <button type="button" data-thread-action="hide" role="menuitem" title="Hide this thread from the sidebar without deleting it.">Hide from sidebar</button>
+                      <button type="button" data-thread-action="shell" role="menuitem" title="Send a shell command request into this thread.">Shell command</button>
                     </div>
                   </div>
                 </div>
@@ -178,12 +214,12 @@
                   </div>
                   <div class="inline-meter" title="Waiting for Codex token usage data after the first turn.">
                     <span class="meter-fill" id="chatContextBar"></span>
-                    <strong id="chatContextValue">Context waiting</strong>
+                    <strong id="chatContextValue">Context pending</strong>
                     <small id="chatContextMeta"></small>
                   </div>
                   <div class="inline-meter">
                     <span class="meter-fill" id="chatLimitBar"></span>
-                    <strong id="chatLimitValue">5h waiting</strong>
+                    <strong id="chatLimitValue">Time window pending</strong>
                     <small id="chatLimitMeta"></small>
                   </div>
                   <div class="detail-row">

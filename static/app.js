@@ -92,6 +92,8 @@ const state = {
 const els = {
   chatTab: document.getElementById("chatTab"),
   appWorkspace: document.getElementById("appWorkspace"),
+  workspaceSwitch: document.getElementById("workspaceSwitch"),
+  workspaceMenu: document.getElementById("workspaceMenu"),
   codexStatus: document.getElementById("codexStatus"),
   chatWorkbench: document.querySelector(".chat-workbench"),
   detailsToggle: document.getElementById("detailsToggle"),
@@ -420,7 +422,12 @@ function populateChatCwdSelect(values) {
 }
 
 function renderChatCwdMenu(items, selectedValue) {
-  const menu = els.chatCwdMenu;
+  renderCwdMenu(els.chatCwdMenu, items, selectedValue);
+  renderCwdMenu(els.workspaceMenu, items, selectedValue);
+}
+
+function renderCwdMenu(menu, items, selectedValue) {
+  if (!menu) return;
   menu.innerHTML = "";
 
   const customRow = document.createElement("div");
@@ -540,7 +547,7 @@ function compareThreadsRecent(left, right) {
 }
 
 function threadStatusLabel(item) {
-  if (item?.id && item.id === state.codex.threadId) return currentSessionStatus();
+  if (item?.id && item.id === state.codex.threadId) return statusDisplayLabel(currentSessionStatus());
   const visibility = threadVisibility(item);
   if (visibility === "archived") return "Archived";
   if (visibility === "hidden") return "Hidden";
@@ -1516,6 +1523,7 @@ function syncCwdButton() {
   els.chatCwdButton.title = value || label;
   setWorkspaceLabel(value || label);
   markChoiceMenuSelection(els.chatCwdMenu, value);
+  markChoiceMenuSelection(els.workspaceMenu, value);
   updateChatEmptyState();
   renderActivitySidebar();
 }
@@ -1615,6 +1623,7 @@ function toggleChoiceMenu(menu, button) {
 
 function closeChoiceMenus() {
   for (const [button, menu] of [
+    [els.workspaceSwitch, els.workspaceMenu],
     [els.chatCwdButton, els.chatCwdMenu],
     [els.chatModelButton, els.chatModelMenu],
     [els.chatEffortButton, els.chatEffortMenu],
@@ -2394,6 +2403,10 @@ async function runThreadAction(actionLabel, callback) {
 async function compactActiveThread() {
   const threadId = activeThreadForAction("Compact");
   if (!threadId) return;
+  const confirmed = window.confirm(
+    "Compact this thread's context?\n\nCodex will summarize older turns so future replies use less context. The original thread is not deleted.",
+  );
+  if (!confirmed) return;
   closeThreadActionMenu();
   beginThreadCompaction(threadId);
   try {
@@ -3689,7 +3702,13 @@ function setChangedFiles(files) {
   for (const file of files || []) {
     const path = file.path || "";
     if (!path) continue;
-    seen.set(path, { path, kind: file.kind || seen.get(path)?.kind || "modify" });
+    const existing = seen.get(path) || {};
+    seen.set(path, {
+      path,
+      kind: file.kind || existing.kind || "modify",
+      additions: Number(file.additions || existing.additions || 0),
+      deletions: Number(file.deletions || existing.deletions || 0),
+    });
   }
   state.codex.changedFiles = [...seen.values()];
   renderActivitySidebar();
@@ -3697,10 +3716,22 @@ function setChangedFiles(files) {
 
 function parseDiffFiles(diff) {
   const files = [];
+  let current = null;
   for (const line of String(diff || "").split("\n")) {
     const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
-    if (!match) continue;
-    files.push({ path: match[2] || match[1], kind: "modify" });
+    if (match) {
+      current = { path: match[2] || match[1], kind: "modify", additions: 0, deletions: 0 };
+      files.push(current);
+      continue;
+    }
+    if (!current) continue;
+    if (line.startsWith("new file mode")) current.kind = "add";
+    else if (line.startsWith("deleted file mode")) current.kind = "delete";
+    else if (line.startsWith("rename to ")) {
+      current.path = line.replace(/^rename to\s+/, "").trim() || current.path;
+      current.kind = "rename";
+    } else if (line.startsWith("+") && !line.startsWith("+++")) current.additions += 1;
+    else if (line.startsWith("-") && !line.startsWith("---")) current.deletions += 1;
   }
   return files;
 }
@@ -4654,7 +4685,7 @@ function syncActionAvailability() {
   const threadActionDisabled = !hasThread || running || busy;
   els.interruptCodexTurn.hidden = !state.codex.turnId;
   els.interruptCodexTurn.disabled = !state.codex.turnId;
-  if (els.compactThread) els.compactThread.textContent = compacting ? "Compacting..." : "Compact";
+  if (els.compactThread) els.compactThread.textContent = compacting ? "Compacting..." : "Compact context";
   for (const button of [els.compactThread, els.reviewThread, els.forkThread, els.moreThreadActions]) {
     if (button) button.disabled = threadActionDisabled;
   }
@@ -4691,11 +4722,12 @@ function selectDetailsTab(tab) {
 function renderSessionStatus() {
   const bridge = state.codex.bridge;
   const status = currentSessionStatus();
+  const label = statusDisplayLabel(status);
   const bits = [];
-  if (state.codex.activity && state.codex.activity !== status) bits.push(state.codex.activity);
+  if (state.codex.activity && state.codex.activity !== status) bits.push(activityDisplayLabel(state.codex.activity));
   if (bridge.lastError) bits.push(bridge.lastError);
 
-  els.chatSessionValue.textContent = status;
+  els.chatSessionValue.textContent = label;
   els.chatSessionValue.className = "sr-only";
   els.chatSessionMeta.textContent = bits.filter(Boolean).join(" · ");
   els.chatSessionMeta.className = "sr-only";
@@ -4705,13 +4737,13 @@ function renderSessionStatus() {
 
 function renderPrimarySummary() {
   const status = currentSessionStatus();
-  els.chatPrimaryStatus.textContent = state.codex.activity && status === "Working" ? state.codex.activity : status;
+  els.chatPrimaryStatus.textContent = state.codex.activity && status === "Working" ? activityDisplayLabel(state.codex.activity) : statusDisplayLabel(status);
   els.chatPrimaryStatus.className = sessionStatusClass(status);
   els.chatPrimaryContext.textContent = compactContextLabel();
   els.chatPrimaryModel.textContent = selectedModelLabel();
   els.chatPrimaryCwd.textContent = shortPath(threadProjectPath(state.codex.threadId) || els.chatCwd.value) || "No directory";
   els.chatPrimaryCwd.title = threadProjectPath(state.codex.threadId) || els.chatCwd.value || "";
-  els.codexStatus.textContent = `${status} · ${compactContextLabel()}`;
+  els.codexStatus.textContent = `${statusDisplayLabel(status)} · ${compactContextLabel()}`;
 }
 
 function renderWorkingIndicator() {
@@ -4766,25 +4798,37 @@ function workingIndicatorCopy() {
   };
 }
 
+function statusDisplayLabel(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "working") return "Running";
+  if (normalized === "starting") return "Waiting";
+  if (normalized === "error") return "Failed";
+  return status || "Idle";
+}
+
+function activityDisplayLabel(activity) {
+  return activity === "Working" ? "Running" : activity || "";
+}
+
 function compactContextLabel() {
   const value = els.chatContextValue.textContent || "";
-  const available = value.match(/Context\s+(\d+)%\s+available/i);
-  if (available) return `${available[1]}% context`;
-  if (/Context\s+waiting/i.test(value)) return "Context pending";
+  const remaining = value.match(/Context\s+(\d+)%\s+remaining/i);
+  if (remaining) return `Context ${remaining[1]}% remaining`;
+  if (/Context\s+(waiting|pending)/i.test(value)) return "Context pending";
   const context = value.match(/Context\s+(.+)/i);
-  if (context) return context[1].trim();
+  if (context) return `Context ${context[1].trim()}`;
   return "Context pending";
 }
 
 function renderActivitySidebar() {
   const status = currentSessionStatus();
-  const meta = [state.codex.activity, state.codex.threadId ? threadTitle(state.codex.threadId) : "No active thread"]
+  const meta = [activityDisplayLabel(state.codex.activity), state.codex.threadId ? threadTitle(state.codex.threadId) : "No active thread"]
     .filter(Boolean)
     .join(" · ");
 
-  els.sidebarTaskStatus.textContent = status;
+  els.sidebarTaskStatus.textContent = statusDisplayLabel(status);
   els.sidebarTaskStatus.className = `session-pill ${sessionStatusClass(status)}`;
-  els.overviewStatus.textContent = status;
+  els.overviewStatus.textContent = statusDisplayLabel(status);
   els.overviewStatus.className = `status-badge ${sessionStatusClass(status)}`;
   els.sidebarTaskMeta.textContent = meta;
   els.sidebarRunningCommand.textContent = state.codex.runningCommand || "None";
@@ -4798,9 +4842,9 @@ function renderActivitySidebar() {
 
 function renderChangedFilesSidebar() {
   const files = state.codex.changedFiles || [];
-  els.sidebarChangedCount.textContent = formatNumber(files.length);
+  els.sidebarChangedCount.textContent = changedFilesSummary(files);
   els.sidebarChangedFiles.innerHTML = "";
-  els.inspectorFilesCount.textContent = formatNumber(files.length);
+  els.inspectorFilesCount.textContent = changedFilesSummary(files);
   els.inspectorFilesList.innerHTML = "";
 
   if (!files.length) {
@@ -4816,6 +4860,7 @@ function renderChangedFilesSidebar() {
     row.innerHTML = `
       <strong>${escapeHtml(fileChangeVerb(file.kind))}</strong>
       <span>${escapeHtml(relativeProjectPath(file.path || ""))}</span>
+      ${fileDeltaHtml(file)}
     `;
     els.sidebarChangedFiles.appendChild(row);
   }
@@ -4826,14 +4871,41 @@ function renderChangedFilesSidebar() {
     row.innerHTML = `
       <strong>${escapeHtml(fileChangeVerb(file.kind))}</strong>
       <span>${escapeHtml(relativeProjectPath(file.path || ""))}</span>
+      ${fileDeltaHtml(file)}
     `;
     els.inspectorFilesList.appendChild(row);
   }
 }
 
+function changedFilesSummary(files) {
+  const list = files || [];
+  if (!list.length) return "0";
+  const counts = new Map();
+  for (const file of list) {
+    const verb = fileChangeVerb(file.kind).toLowerCase();
+    counts.set(verb, (counts.get(verb) || 0) + 1);
+  }
+  if (counts.size === 1) {
+    const [verb, count] = [...counts.entries()][0];
+    return `${formatNumber(count)} ${pluralize(verb, count)}`;
+  }
+  return `${formatNumber(list.length)} files`;
+}
+
+function fileDeltaHtml(file) {
+  const additions = Number(file?.additions || 0);
+  const deletions = Number(file?.deletions || 0);
+  if (!additions && !deletions) return "";
+  return `<em class="file-delta">+${formatNumber(additions)} -${formatNumber(deletions)}</em>`;
+}
+
+function pluralize(word, count) {
+  return count === 1 ? word : `${word}s`;
+}
+
 function contextSidebarLabel() {
   const text = (els.chatContextValue.textContent || "").replace(/^Context\s*/i, "");
-  return text || "Waiting";
+  return text || "Pending";
 }
 
 function sessionStatusClass(status) {
@@ -4863,7 +4935,7 @@ function renderContextStatus() {
       els.chatContextValue.textContent = `Context ${formatCompactNumber(totalUsed)} used`;
       els.chatContextMeta.textContent = "";
     } else {
-      els.chatContextValue.textContent = "Context waiting";
+      els.chatContextValue.textContent = "Context pending";
       els.chatContextMeta.textContent = "";
       els.chatContextValue.closest(".inline-meter").title = "Waiting for Codex token usage data after the first turn.";
     }
@@ -4872,11 +4944,11 @@ function renderContextStatus() {
   }
 
   const remaining = clamp(100 - percent, 0, 100);
-  els.chatContextValue.textContent = `Context ${Math.round(remaining)}% available`;
+  els.chatContextValue.textContent = `Context ${Math.round(remaining)}% remaining`;
   els.chatContextMeta.textContent = "";
   els.chatContextValue.closest(".inline-meter").title =
     `${formatCompactNumber(used)} of ${formatCompactNumber(windowTokens)} tokens currently in context`;
-  setMeter(els.chatContextBar, percent, "used");
+  setMeter(els.chatContextBar, remaining, "remaining");
 }
 
 function renderContextInspector() {
@@ -5297,7 +5369,7 @@ function renderLimitStatus() {
   const limit = preferredRateLimit(state.codex.rateLimits);
   const meter = els.chatLimitValue.closest(".inline-meter");
   if (!limit) {
-    els.chatLimitValue.textContent = state.codex.rateLimitError ? "No time estimate" : "5h remaining";
+    els.chatLimitValue.textContent = state.codex.rateLimitError ? "Time window unavailable" : "Time window pending";
     els.chatLimitMeta.textContent = "";
     meter.title = state.codex.rateLimitError ? readableLimitError(state.codex.rateLimitError) : "Waiting for Codex usage limit data.";
     setMeter(els.chatLimitBar, 0, "empty");
@@ -5306,11 +5378,17 @@ function renderLimitStatus() {
 
   const percent = limit.usedPercent !== null && limit.usedPercent !== undefined ? clamp(limit.usedPercent, 0, 100) : null;
   const remaining = percent === null ? null : clamp(100 - percent, 0, 100);
-  const windowLabel = limit.windowLabel || "5h";
-  els.chatLimitValue.textContent = remaining === null ? `${windowLabel} remaining` : `${windowLabel} remaining · ${Math.round(remaining)}%`;
+  const windowLabel = limitWindowLabel(limit);
+  els.chatLimitValue.textContent = remaining === null ? `${windowLabel} left` : `${windowLabel} left · ${Math.round(remaining)}% remaining`;
   els.chatLimitMeta.textContent = "";
   meter.title = [limit.name, limit.resetLabel].filter(Boolean).join(" · ") || windowLabel;
   setMeter(els.chatLimitBar, remaining || 0, "remaining");
+}
+
+function limitWindowLabel(limit) {
+  if (limit?.windowMins) return formatWindowDuration(limit.windowMins);
+  const label = String(limit?.windowLabel || limit?.name || "5h").replace(/\s+window$/i, "").trim();
+  return label || "5h";
 }
 
 function setMeter(node, percent, mode = "used") {
@@ -5463,7 +5541,8 @@ function copyText(text) {
 function setWorkspaceLabel(path) {
   const value = path || "No workspace selected";
   els.appWorkspace.textContent = shortPath(value) || value;
-  els.appWorkspace.closest(".workspace-chip").title = value;
+  const chip = els.appWorkspace.closest(".workspace-chip");
+  if (chip) chip.title = value ? `Workspace: ${value}` : "Workspace not selected";
 }
 
 function updateComposerState() {
@@ -5822,6 +5901,16 @@ els.chatCwdButton.addEventListener("click", () => {
   toggleChoiceMenu(els.chatCwdMenu, els.chatCwdButton);
   if (!els.chatCwdMenu.hidden) {
     const input = els.chatCwdMenu.querySelector(".custom-cwd-input");
+    if (input) {
+      input.focus();
+      input.select();
+    }
+  }
+});
+els.workspaceSwitch.addEventListener("click", () => {
+  toggleChoiceMenu(els.workspaceMenu, els.workspaceSwitch);
+  if (!els.workspaceMenu.hidden) {
+    const input = els.workspaceMenu.querySelector(".custom-cwd-input");
     if (input) {
       input.focus();
       input.select();

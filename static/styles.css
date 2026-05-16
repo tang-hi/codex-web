@@ -150,6 +150,7 @@ button:disabled {
   display: flex;
   gap: 16px;
   min-width: 0;
+  position: relative;
 }
 
 h1,
@@ -167,10 +168,26 @@ h1 {
 
 .workspace-chip {
   align-items: center;
+  background: #f8fafc;
+  border: 1px solid #d7dee8;
+  border-radius: 999px;
   color: var(--muted);
-  display: flex;
+  display: inline-flex;
   gap: 8px;
+  min-height: 30px;
   min-width: 0;
+  padding: 0 10px;
+}
+
+.workspace-picker {
+  min-width: 0;
+  position: relative;
+}
+
+.workspace-chip:hover {
+  background: var(--accent-soft);
+  border-color: #bfd5f4;
+  color: var(--accent);
 }
 
 .workspace-chip span {
@@ -188,6 +205,20 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workspace-chip em {
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.workspace-menu {
+  left: 0;
+  min-width: min(520px, calc(100vw - 36px));
+  position: absolute;
+  top: calc(100% + 6px);
+  z-index: 80;
 }
 
 .header-actions {
@@ -230,13 +261,20 @@ h1 {
   width: 8px;
 }
 
-.status-pill.ready::before,
-.status-pill.working::before {
+.status-pill.ready::before {
   background: var(--success);
+}
+
+.status-pill.working::before {
+  background: var(--accent);
 }
 
 .status-pill.starting::before {
   background: #d99719;
+}
+
+.status-pill.error::before {
+  background: var(--danger);
 }
 
 .status-pill.idle::before {
@@ -658,6 +696,12 @@ tbody tr:last-child td {
   text-transform: uppercase;
 }
 
+.sidebar-new-button {
+  min-height: 30px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
 .compact-button {
   min-height: 28px;
   padding: 0 8px;
@@ -883,7 +927,37 @@ tbody tr:last-child td {
 }
 
 .title-action {
-  opacity: 0.72;
+  border-radius: 999px;
+  font-size: 13px;
+  height: 28px;
+  min-height: 28px;
+  opacity: 0;
+  padding: 0;
+  transition:
+    background 140ms ease,
+    opacity 140ms ease;
+  width: 28px;
+}
+
+.chat-title-line:hover .title-action,
+.title-action:focus-visible,
+.title-action[aria-expanded="true"] {
+  opacity: 1;
+}
+
+.title-action:disabled {
+  opacity: 0;
+}
+
+.chat-cwd-line {
+  color: var(--muted);
+  font-family: "Maple Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.35;
+  max-width: min(64vw, 780px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .full-width-button {
@@ -1437,6 +1511,13 @@ tbody tr:last-child td {
   align-items: center;
   display: grid;
   gap: 6px;
+}
+
+.sidebar-file {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.sidebar-kv div {
   grid-template-columns: auto minmax(0, 1fr);
 }
 
@@ -1451,6 +1532,14 @@ tbody tr:last-child td {
 .sidebar-kv strong {
   color: var(--text);
   font-size: 12px;
+}
+
+.file-delta {
+  color: var(--muted);
+  font-family: "Maple Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-style: normal;
+  white-space: nowrap;
 }
 
 .sidebar-mono {
@@ -1519,11 +1608,11 @@ tbody tr:last-child td {
 
 .session-pill.working {
   animation: working-pulse 900ms ease-in-out infinite;
-  color: var(--success);
+  color: var(--accent);
 }
 
 .session-pill.working::before {
-  background: var(--success);
+  background: var(--accent);
 }
 
 .session-pill.starting {
@@ -1532,6 +1621,14 @@ tbody tr:last-child td {
 
 .session-pill.starting::before {
   background: #d99719;
+}
+
+.session-pill.error {
+  color: var(--danger);
+}
+
+.session-pill.error::before {
+  background: var(--danger);
 }
 
 .session-pill.idle {
