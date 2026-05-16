@@ -2478,6 +2478,10 @@ tbody tr:last-child td {
   padding-bottom: 86px;
 }
 
+.chat-log-shell.working-indicator-compact .chat-log {
+  padding-bottom: 68px;
+}
+
 .message-jump-nav {
   align-items: center;
   background: rgb(255 255 255 / 90%);
@@ -2512,6 +2516,21 @@ tbody tr:last-child td {
   z-index: 4;
 }
 
+.chat-working-indicator.has-visible-output {
+  background: rgb(255 255 255 / 88%);
+  border-color: #d9e1eb;
+  box-shadow: 0 6px 16px rgb(15 23 42 / 8%);
+  color: #34445a;
+  min-height: 34px;
+  opacity: 0.9;
+  padding: 6px 12px 6px 10px;
+}
+
+.chat-working-indicator.has-visible-output:hover,
+.chat-working-indicator.has-visible-output:focus-within {
+  opacity: 1;
+}
+
 .chat-working-indicator[hidden] {
   display: none;
 }
@@ -2539,6 +2558,14 @@ tbody tr:last-child td {
   font-size: 11px;
 }
 
+.chat-working-indicator.has-visible-output strong {
+  font-size: 11px;
+}
+
+.chat-working-indicator.has-visible-output span:last-child {
+  font-size: 10px;
+}
+
 .chat-working-dot {
   animation: chat-working-pulse 1s ease-in-out infinite;
   background: var(--accent);
@@ -2547,6 +2574,12 @@ tbody tr:last-child td {
   flex: 0 0 auto;
   height: 8px;
   width: 8px;
+}
+
+.chat-working-indicator.has-visible-output .chat-working-dot {
+  box-shadow: 0 0 0 4px rgb(24 104 219 / 9%);
+  height: 7px;
+  width: 7px;
 }
 
 @keyframes chat-working-pulse {

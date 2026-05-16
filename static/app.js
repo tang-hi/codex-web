@@ -4753,11 +4753,15 @@ function renderWorkingIndicator() {
   const show = Boolean(
     state.codex.threadId &&
       currentSessionStatus() === "Working" &&
-      !isCompactionPending(currentThreadCompaction()) &&
-      !state.codex.turnHasVisibleOutput,
+      !isCompactionPending(currentThreadCompaction()),
   );
+  const compact = Boolean(show && state.codex.turnHasVisibleOutput);
   indicator.hidden = !show;
-  if (shell) shell.classList.toggle("working-indicator-visible", show);
+  indicator.classList.toggle("has-visible-output", compact);
+  if (shell) {
+    shell.classList.toggle("working-indicator-visible", show);
+    shell.classList.toggle("working-indicator-compact", compact);
+  }
   if (!show) return;
 
   const copy = workingIndicatorCopy();
@@ -4778,6 +4782,13 @@ function workingIndicatorCopy() {
     return {
       title: state.codex.actionInFlight,
       detail: "Waiting for Codex to report progress.",
+    };
+  }
+  if (state.codex.turnHasVisibleOutput) {
+    const command = conciseCommand(state.codex.runningCommand || "");
+    return {
+      title: "Codex is still working",
+      detail: command ? `Running ${command}` : "Latest updates are above. This turn has not finished yet.",
     };
   }
   if (state.codex.threadStatusMessage) {
