@@ -22,6 +22,7 @@ const state = {
   modelsLoaded: false,
   threadConfigs: loadThreadConfigs(),
   threadMetadata: loadThreadMetadata(),
+  localThreadItems: {},
   sidebarQuery: "",
   threadManager: {
     open: false,
@@ -82,6 +83,7 @@ const state = {
     planDeltas: {},
     approvalNodes: {},
     threadRuntime: {},
+    threadTokenUsage: {},
     forkIdleThreadIds: new Set(),
     compactions: {},
     pendingTurnThreadId: "",
@@ -406,7 +408,7 @@ async function loadThreads() {
     limit: "1000",
   });
   const data = await api(`/api/threads?${query.toString()}`);
-  state.items = data.items || [];
+  state.items = mergeLocalThreadItems(data.items || []);
   state.facets = data.facets;
   seedThreadConfigsFromItems(state.items);
   seedThreadMetadataFromItems(state.items);
@@ -415,6 +417,27 @@ async function loadThreads() {
   renderThreadManager();
   renderPersonalizationThreadPicker();
   renderChatThreadLine();
+}
+
+function refreshThreadIndexAndList(delayMs = 0) {
+  window.setTimeout(() => {
+    postJson("/api/index/rebuild", {})
+      .then(loadThreads)
+      .catch((error) => console.debug("[threads refresh]", error.message));
+  }, delayMs);
+}
+
+function mergeLocalThreadItems(serverItems) {
+  const items = Array.isArray(serverItems) ? [...serverItems] : [];
+  const serverIds = new Set(items.map((item) => item.id).filter(Boolean));
+  for (const id of Object.keys(state.localThreadItems)) {
+    if (serverIds.has(id)) {
+      delete state.localThreadItems[id];
+      continue;
+    }
+    items.push(state.localThreadItems[id]);
+  }
+  return items.sort(compareThreadsRecent);
 }
 
 function populateFacets() {
@@ -2002,6 +2025,7 @@ function upsertThreadItemFromCodexResult(result, sourceThreadId, fallback = {}) 
 
   if (existingIndex >= 0) state.items[existingIndex] = item;
   else state.items.unshift(item);
+  state.localThreadItems[thread.id] = item;
   seedThreadConfigsFromItems([item]);
   seedThreadMetadataFromItems([item]);
   renderSidebarThreads();
@@ -2560,6 +2584,7 @@ function handleCodexEvent(event) {
 
   const ignoreForkIdleRuntime = shouldIgnoreForkIdleNotification(method, params);
   if (!ignoreForkIdleRuntime) rememberThreadRuntime(method, params);
+  const tokenUsageSnapshot = method === "thread/tokenUsage/updated" ? rememberThreadTokenUsage(params) : null;
   if (!notificationTargetsVisibleThread(method, params)) {
     return;
   }
@@ -2629,7 +2654,7 @@ function handleCodexEvent(event) {
     return;
   }
   if (method === "thread/tokenUsage/updated") {
-    updateTokenUsage(params);
+    updateTokenUsage(params, tokenUsageSnapshot);
     return;
   }
   if (method === "account/rateLimits/updated") {
@@ -2848,7 +2873,7 @@ async function resumeCodexThreadById() {
   const config = await ensureThreadConfig(threadId);
   const options = optionsFromThreadConfig(config);
   if (hasThreadConfigValues(config)) applyThreadConfigToControls(config);
-  const result = await postJson("/api/codex/resume", { threadId, ...options, excludeTurns: true });
+  const result = await postJson("/api/codex/resume", { threadId, ...options, excludeTurns: false });
   const id = (result.thread && result.thread.id) || threadId;
   if (id) rememberThreadConfigFromCodexResult(id, result, options);
   resetChatTranscript();
@@ -3096,6 +3121,7 @@ async function forkActiveThread() {
     markForkedThreadIdle(id);
     setChatActivity("Ready");
     loadThreads().catch((error) => console.debug("[threads refresh]", error.message));
+    refreshThreadIndexAndList(1200);
   }, { showWorking: false });
 }
 
@@ -4522,7 +4548,7 @@ function applyBridgeStatus(status) {
   );
 }
 
-function updateTokenUsage(params) {
+function normalizeTokenUsageSnapshot(params) {
   const info = firstObject(params.info, params);
   const usage = firstObject(params.tokenUsage, params.token_usage, params.usage, info.tokenUsage, info.token_usage, info.usage, params);
   const context = firstObject(usage.context, params.context, info.context);
@@ -4643,16 +4669,48 @@ function updateTokenUsage(params) {
     usage.reasoning_output_tokens,
   );
   const activeContextTokens = firstNumber(last.totalTokens, last.total_tokens, last.total);
-  const derivedContextUsed = contextUsed === null && activeContextTokens !== null ? activeContextTokens : null;
+  const currentContextTokens = contextUsed === null ? activeContextTokens : contextUsed;
 
-  state.codex.tokenUsage = {
-    used: contextUsed === null ? derivedContextUsed : contextUsed,
-    derived: contextUsed === null && derivedContextUsed !== null,
+  if (
+    currentContextTokens === null &&
+    windowTokens === null &&
+    totalUsed === null &&
+    input === null &&
+    output === null
+  ) {
+    return null;
+  }
+
+  return {
+    used: currentContextTokens,
+    derived: false,
     windowTokens,
     totalUsed,
     input,
     output,
   };
+}
+
+function rememberThreadTokenUsage(params, snapshot = null) {
+  const normalized = snapshot || normalizeTokenUsageSnapshot(params);
+  if (!normalized) return null;
+  const threadId = notificationThreadId(params);
+  if (threadId) {
+    state.codex.threadTokenUsage[threadId] = normalized;
+  }
+  return normalized;
+}
+
+function applyThreadTokenUsageToVisibleThread(threadId) {
+  state.codex.tokenUsage = threadId && state.codex.threadTokenUsage[threadId] ? { ...state.codex.threadTokenUsage[threadId] } : null;
+}
+
+function updateTokenUsage(params, snapshot = null) {
+  const normalized = rememberThreadTokenUsage(params, snapshot);
+  if (!normalized) return;
+  const threadId = notificationThreadId(params);
+  if (threadId && state.codex.threadId && threadId !== state.codex.threadId) return;
+  state.codex.tokenUsage = { ...normalized };
   const contextBreakdown = normalizeContextBreakdown(params);
   if (contextBreakdown) {
     state.codex.contextBreakdown = contextBreakdown;
@@ -4755,6 +4813,7 @@ async function loadInitialThreadHistory(threadId) {
   try {
     await loadThreadHistoryPage("append");
     await fillHistoryViewportIfNeeded();
+    scheduleThreadContextBreakdownRefresh(250);
   } catch (error) {
     state.codex.history.initialized = true;
     appendChatLine("error", `History load failed: ${error.message}`);
@@ -4805,6 +4864,7 @@ async function loadThreadHistoryPage(placement) {
       appendCompactInfo("Resumed thread; no history was returned.");
     } else if (newTurns.length) {
       if (placement === "append") appendCompactInfo(`Loaded latest ${formatNumber(newTurns.length)} turns`);
+      primeContextFromHistoryTurns(request.threadId, newTurns);
       renderThreadHistoryTurns(newTurns, placement, { order: "desc" });
       for (const turn of newTurns) history.loadedTurnIds.add(turn.id);
     }
@@ -5080,6 +5140,7 @@ function setActiveThread(id, options = {}) {
     applyThreadRuntimeToVisibleThread(id);
     syncVisibleCompactionActivity(id);
   }
+  applyThreadTokenUsageToVisibleThread(id);
   if (state.codex.contextBreakdownThreadId !== id) {
     state.codex.contextBreakdown = null;
     state.codex.contextBreakdownThreadId = null;
@@ -5139,6 +5200,82 @@ function hasCurrentContextBreakdown(threadId = state.codex.threadId) {
   );
 }
 
+function primeContextFromHistoryTurns(threadId, turns) {
+  if (!threadId || state.codex.threadId !== threadId || hasCurrentContextBreakdown(threadId)) return;
+  const summary = contextBreakdownFromHistoryTurns(turns);
+  if (!summary.items.length) return;
+  state.codex.contextBreakdown = summary.items;
+  state.codex.contextBreakdownThreadId = threadId;
+  state.codex.contextBreakdownEstimated = true;
+  state.codex.contextContributors = summary.contributors;
+  renderChatStatus();
+}
+
+function contextBreakdownFromHistoryTurns(turns) {
+  const buckets = new Map();
+  const contributors = [];
+  const add = (category, label, text, metadata = {}) => {
+    const value = String(text || "").trim();
+    if (!value) return;
+    const tokens = estimateContextTokens(value);
+    if (!tokens) return;
+    const bucket = buckets.get(category) || {
+      id: category,
+      category,
+      label: contextCategoryGroup(category).label,
+      tokens: 0,
+      source: "loaded_history",
+    };
+    bucket.tokens += tokens;
+    buckets.set(category, bucket);
+    contributors.push({
+      id: `history-${category}-${contributors.length}`,
+      category,
+      label,
+      rawLabel: label,
+      tokens,
+      source: "loaded history",
+      ...metadata,
+    });
+  };
+
+  for (const turn of turns || []) {
+    add("user_messages", "User message", textFromContent(turn?.input));
+    for (const item of historicalTurnItems(turn)) {
+      const type = item?.type || item?.kind || "";
+      if (type === "userMessage" || type === "user_message" || item?.role === "user") {
+        add("user_messages", "User message", itemText(item));
+      } else if (type === "agentMessage" || type === "agent_message" || item?.role === "assistant") {
+        add("assistant_messages", "Assistant reply", itemText(item));
+      } else if (type === "commandExecution") {
+        const command = stripShellWrapper(item.command || "");
+        add("tool_outputs", command ? contextCommandLabel(command) : "Command output", item.aggregatedOutput || item.output || "", { command });
+      } else if (type === "fileChange") {
+        const diff = item.diff || (item.changes || []).map((change) => change.diff || "").filter(Boolean).join("\n\n");
+        add("diffs", "File changes", diff, { filePath: item.changes?.[0]?.path || "" });
+      } else if (type === "mcpToolCall" || type === "dynamicToolCall") {
+        const label = [item.server, item.namespace, item.tool].filter(Boolean).join(".");
+        add("tool_outputs", label ? `${label} output` : "Tool output", JSON.stringify(item.result || item.error || item.contentItems || item.arguments || ""), { tool: item.tool || "" });
+      }
+    }
+  }
+
+  const totalTokens = [...buckets.values()].reduce((sum, item) => sum + item.tokens, 0);
+  const items = [...buckets.values()]
+    .map((item) => ({ ...item, percentage: totalTokens ? (item.tokens / totalTokens) * 100 : 0 }))
+    .sort((left, right) => right.tokens - left.tokens);
+  contributors.sort((left, right) => right.tokens - left.tokens);
+  return { items, contributors: contributors.slice(0, 12), totalTokens };
+}
+
+function estimateContextTokens(text) {
+  const value = String(text || "").trim();
+  if (!value) return 0;
+  const cjkChars = (value.match(/[\u3400-\u9fff]/g) || []).length;
+  const asciiTokens = Math.ceil((value.length - cjkChars) / 4);
+  return Math.max(1, cjkChars + asciiTokens);
+}
+
 function scheduleThreadContextBreakdownRefresh(delayMs = 600) {
   const threadId = state.codex.threadId;
   if (!threadId) return;
@@ -5165,16 +5302,6 @@ async function loadThreadContextBreakdown(threadId, options = {}) {
       state.codex.contextBreakdownThreadId = threadId;
       state.codex.contextBreakdownEstimated = Boolean(data.estimated);
       state.codex.contextContributors = data.contributors || [];
-    }
-    if (!state.codex.tokenUsage && data.totalTokens) {
-      state.codex.tokenUsage = {
-        used: data.totalTokens,
-        derived: true,
-        windowTokens: data.windowTokens || null,
-        totalUsed: data.totalTokens,
-        input: null,
-        output: null,
-      };
     }
     renderChatStatus();
   } catch (error) {
@@ -5616,13 +5743,13 @@ function renderContextStatus() {
     } else if (windowTokens) {
       els.chatContextValue.textContent = `Context ${formatCompactNumber(windowTokens)}`;
       els.chatContextMeta.textContent = "";
-    } else if (totalUsed !== null && totalUsed !== undefined) {
-      els.chatContextValue.textContent = `Context ${formatCompactNumber(totalUsed)} used`;
-      els.chatContextMeta.textContent = "";
     } else {
       els.chatContextValue.textContent = "Context pending";
       els.chatContextMeta.textContent = "";
-      els.chatContextValue.closest(".inline-meter").title = "Waiting for Codex token usage data after the first turn.";
+      els.chatContextValue.closest(".inline-meter").title =
+        totalUsed !== null && totalUsed !== undefined
+          ? "Current context usage is unavailable. Session total token usage is available but is not the active context size."
+          : "Waiting for Codex token usage data.";
     }
     setMeter(els.chatContextBar, 0, "empty");
     return;
@@ -5655,7 +5782,7 @@ function buildContextSummary() {
   const maxContextTokens = firstNumber(usage.windowTokens);
   const attributionBaseTokens = contextAttributionBaseTokens(liveContextTokens, maxContextTokens, breakdownTotalTokens);
   const attributionScale = contextAttributionScale(attributionBaseTokens, breakdownTotalTokens);
-  const estimatedTokens = liveContextTokens || attributionBaseTokens || breakdownTotalTokens || null;
+  const estimatedTokens = liveContextTokens;
   const categories = aggregateContextCategories(normalizedCategories, breakdownTotalTokens, attributionScale);
   const contributors = rawContributors
     .map((item, index) => normalizeContextBreakdownItem(item, index, "contributor"))
@@ -5672,7 +5799,7 @@ function buildContextSummary() {
     attributionBaseTokens,
     usagePercentage,
     pressure: contextPressureLevel(usagePercentage, estimatedTokens, maxContextTokens),
-    estimated: Boolean(state.codex.contextBreakdownEstimated || usage.derived),
+    estimated: Boolean(usage.derived),
     hasCoarseAttribution: categories.length > 0,
     hasDetailedAttribution,
     categories,
@@ -5735,7 +5862,6 @@ function aggregateContextCategories(items, totalTokens, scale = 1) {
 
 function contextAttributionBaseTokens(liveContextTokens, maxContextTokens, breakdownTotalTokens) {
   if (liveContextTokens !== null && liveContextTokens > 0) return liveContextTokens;
-  if (maxContextTokens !== null && maxContextTokens > 0 && breakdownTotalTokens > maxContextTokens) return maxContextTokens;
   return breakdownTotalTokens || null;
 }
 
@@ -5794,7 +5920,9 @@ function renderContextHealth(summary) {
       ? `${percentText} · ${pressureLabel}`
       : summary.estimatedTokens !== null
         ? `Window size unavailable · ${pressureLabel.toLowerCase()} inferred from estimated tokens`
-        : "Waiting for context usage data.";
+        : summary.hasCoarseAttribution
+          ? "Current window usage unavailable · source attribution shown below"
+          : "Waiting for context usage data.";
   const meterPercent = summary.usagePercentage !== null ? summary.usagePercentage : contextPressureFallbackPercent(summary.pressure);
   els.contextHealthBar.style.width = `${meterPercent}%`;
   els.contextHealthBar.className = summary.pressure;
@@ -5980,6 +6108,9 @@ function contextPressureFallbackPercent(pressure) {
 
 function contextHealthNote(summary) {
   const top = summary.categories[0];
+  if (!summary.estimatedTokens && summary.hasCoarseAttribution) {
+    return "Source attribution is estimated from indexed history. Current window usage updates when Codex reports token usage.";
+  }
   if (!summary.estimatedTokens) return "Send or resume a thread to collect context usage.";
   if (top?.category === "tool_outputs" && top.percentage >= 50) return "Large tool outputs may reduce answer quality and increase latency.";
   if (summary.pressure === "critical") return "Context is close to the model window. Compact or summarize before continuing complex work.";

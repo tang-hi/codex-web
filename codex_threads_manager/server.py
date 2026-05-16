@@ -359,6 +359,7 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
                 optional_str(body.get("effort")),
                 optional_str(body.get("serviceTier")),
             )
+            self.index.rebuild()
             self.send_json(result)
         except (CodexBridgeError, ValueError) as exc:
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
