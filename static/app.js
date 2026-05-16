@@ -711,11 +711,34 @@ function toggleThreadItemMenu(wrapper) {
   closeThreadItemMenus();
   menu.hidden = !willOpen;
   button.setAttribute("aria-expanded", willOpen ? "true" : "false");
+  if (willOpen) positionThreadItemMenu(wrapper);
+}
+
+function positionThreadItemMenu(wrapper) {
+  const menu = wrapper.querySelector(".thread-item-menu");
+  const button = wrapper.querySelector(".thread-item-menu-button");
+  if (!menu || !button || menu.hidden) return;
+  const margin = 8;
+  const gap = 4;
+  const buttonRect = button.getBoundingClientRect();
+  const menuRect = menu.getBoundingClientRect();
+  const left = Math.min(
+    window.innerWidth - margin - menuRect.width,
+    Math.max(margin, buttonRect.right - menuRect.width),
+  );
+  let top = buttonRect.bottom + gap;
+  if (top + menuRect.height > window.innerHeight - margin) {
+    top = Math.max(margin, buttonRect.top - menuRect.height - gap);
+  }
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
 }
 
 function closeThreadItemMenus() {
   for (const menu of document.querySelectorAll(".thread-item-menu")) {
     menu.hidden = true;
+    menu.style.left = "";
+    menu.style.top = "";
   }
   for (const button of document.querySelectorAll(".thread-item-menu-button")) {
     button.setAttribute("aria-expanded", "false");
@@ -2456,10 +2479,6 @@ async function runThreadAction(actionLabel, callback) {
 async function compactActiveThread() {
   const threadId = activeThreadForAction("Compact");
   if (!threadId) return;
-  const confirmed = window.confirm(
-    "Compact this thread's context?\n\nCodex will summarize older turns so future replies use less context. The original thread is not deleted.",
-  );
-  if (!confirmed) return;
   closeThreadActionMenu();
   beginThreadCompaction(threadId);
   try {
@@ -5889,7 +5908,10 @@ els.chatComposer.addEventListener("drop", (event) => {
 });
 els.chatInput.addEventListener("input", autoSizeChatInput);
 els.chatInput.addEventListener("input", updateComposerState);
-window.addEventListener("resize", autoSizeChatInput);
+window.addEventListener("resize", () => {
+  autoSizeChatInput();
+  closeThreadItemMenus();
+});
 els.compactThread.addEventListener("click", () => compactActiveThread());
 els.reviewThread.addEventListener("click", () => reviewActiveThread());
 els.forkThread.addEventListener("click", () => forkActiveThread());
@@ -5900,6 +5922,7 @@ els.sidebarThreadSearch.addEventListener("input", () => {
   state.sidebarQuery = els.sidebarThreadSearch.value;
   renderSidebarThreads();
 });
+els.sidebarThreads.addEventListener("scroll", closeThreadItemMenus, { passive: true });
 els.openThreadManager.addEventListener("click", () => openThreadManager("active"));
 els.closeThreadManager.addEventListener("click", closeThreadManager);
 els.threadManagerModal.addEventListener("click", (event) => {
