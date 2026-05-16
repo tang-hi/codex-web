@@ -73,6 +73,7 @@ const state = {
     commandOutputs: {},
     planDeltas: {},
     approvalNodes: {},
+    threadRuntime: {},
     latestDiff: "",
     changedFiles: [],
     runningCommand: "",
@@ -1978,6 +1979,12 @@ function handleCodexEvent(event) {
   const method = message.method;
   const params = message.params || {};
 
+  rememberThreadRuntime(method, params);
+  if (!notificationTargetsVisibleThread(method, params)) {
+    return;
+  }
+  markVisibleThreadWorking(method, params);
+
   if (method === "configWarning") {
     appendChatLine("warning", params.summary || "Config warning");
     return;
@@ -2016,6 +2023,8 @@ function handleCodexEvent(event) {
       appendChatLine("error", `Turn ${status}`);
     }
     state.codex.turnId = null;
+    state.codex.threadStatus = "";
+    state.codex.threadStatusMessage = "";
     syncActionAvailability();
     setChatActivity("");
     scheduleThreadContextBreakdownRefresh(1200);
@@ -2081,6 +2090,75 @@ function handleCodexEvent(event) {
   }
   if (method === "error") {
     appendChatLine("error", params.error?.message || JSON.stringify(params, null, 2));
+  }
+}
+
+function notificationThreadId(params) {
+  return (
+    optionalText(params.threadId) ||
+    optionalText(params.thread_id) ||
+    optionalText(params.thread?.id) ||
+    optionalText(params.conversationId) ||
+    optionalText(params.conversation_id)
+  );
+}
+
+function notificationTurnId(params) {
+  return optionalText(params.turnId) || optionalText(params.turn_id) || optionalText(params.turn?.id);
+}
+
+function notificationTargetsVisibleThread(method, params) {
+  const threadId = notificationThreadId(params);
+  if (!threadId) return true;
+  if (!state.codex.threadId) return false;
+  return threadId === state.codex.threadId;
+}
+
+function rememberThreadRuntime(method, params) {
+  const threadId = notificationThreadId(params);
+  if (!threadId) return;
+  const existing = state.codex.threadRuntime[threadId] || {};
+  const turnId = notificationTurnId(params);
+  const next = { ...existing, updatedAt: Date.now() };
+
+  if (method === "thread/status/changed") {
+    const status = normalizeThreadStatus(params.status || params.thread?.status || "");
+    next.threadStatus = status;
+    next.threadStatusMessage = optionalText(params.statusMessage || params.status_message || params.thread?.statusMessage);
+    next.active = status === "active";
+    if (status !== "active") next.turnId = "";
+  }
+
+  if (turnId && method !== "turn/completed" && existing.completedTurnId !== turnId) {
+    next.turnId = turnId;
+    next.active = true;
+  }
+
+  if (method === "turn/completed") {
+    if (!turnId || !existing.turnId || existing.turnId === turnId) {
+      next.turnId = "";
+      next.active = false;
+    }
+    if (turnId) next.completedTurnId = turnId;
+  }
+
+  state.codex.threadRuntime[threadId] = next;
+}
+
+function markVisibleThreadWorking(method, params) {
+  if (method === "turn/completed") return;
+  const threadId = notificationThreadId(params);
+  const turnId = notificationTurnId(params);
+  if (!threadId || threadId !== state.codex.threadId || !turnId) return;
+  if (state.codex.threadRuntime[threadId]?.completedTurnId === turnId) return;
+  if (state.codex.turnId !== turnId) {
+    state.codex.turnId = turnId;
+    syncActionAvailability();
+  }
+  if (!state.codex.activity) {
+    setChatActivity("Working");
+  } else {
+    renderChatStatus();
   }
 }
 
@@ -2419,6 +2497,9 @@ function handleThreadActionMenuClick(event) {
 
 function renderServerRequest(request) {
   const params = request.params || {};
+  rememberThreadRuntime(request.method || "serverRequest", params);
+  if (!notificationTargetsVisibleThread(request.method || "serverRequest", params)) return;
+  markVisibleThreadWorking(request.method || "serverRequest", params);
   const requestId = request.id || params.requestId || `approval-${Object.keys(state.codex.approvalNodes).length}`;
   const box = document.createElement("article");
   box.className = "transcript-event approval";
@@ -3741,13 +3822,17 @@ function updateRateLimits(params) {
 function updateThreadStatus(params) {
   const status = params.status || params.thread?.status || "";
   const message = params.statusMessage || params.status_message || params.thread?.statusMessage || "";
-  state.codex.threadStatus = typeof status === "object" && status ? status.type || status.status || "" : String(status || "");
+  state.codex.threadStatus = normalizeThreadStatus(status);
   state.codex.threadStatusMessage = message || "";
   if (message) {
     setChatActivity(message);
   } else {
     renderChatStatus();
   }
+}
+
+function normalizeThreadStatus(status) {
+  return typeof status === "object" && status ? status.type || status.status || "" : String(status || "");
 }
 
 function resetHistoryPaging(threadId = null) {
@@ -4067,7 +4152,11 @@ function imagesFromContent(value) {
 }
 
 function setActiveThread(id, options = {}) {
+  const previousThreadId = state.codex.threadId;
   state.codex.threadId = id;
+  if (previousThreadId !== id) {
+    applyThreadRuntimeToVisibleThread(id);
+  }
   if (state.codex.contextBreakdownThreadId !== id) {
     state.codex.contextBreakdown = null;
     state.codex.contextBreakdownThreadId = null;
@@ -4093,6 +4182,19 @@ function setActiveThread(id, options = {}) {
   renderSidebarThreads();
   renderActivitySidebar();
   loadThreadContextBreakdown(id);
+}
+
+function applyThreadRuntimeToVisibleThread(threadId) {
+  const runtime = state.codex.threadRuntime[threadId] || {};
+  const running = Boolean(runtime.active && runtime.turnId);
+  state.codex.turnId = running ? runtime.turnId : null;
+  state.codex.threadStatus = runtime.threadStatus || (runtime.active ? "active" : "");
+  state.codex.threadStatusMessage = runtime.threadStatusMessage || "";
+  if (runtime.active && !state.codex.activity) {
+    state.codex.activity = "Working";
+  } else if (!runtime.active && state.codex.activity === "Working") {
+    state.codex.activity = "";
+  }
 }
 
 function hasCurrentContextBreakdown(threadId = state.codex.threadId) {
@@ -4155,6 +4257,8 @@ function resetChatTranscript() {
   els.chatLog.innerHTML = "";
   state.codex.turnId = null;
   state.codex.activity = "";
+  state.codex.threadStatus = "";
+  state.codex.threadStatusMessage = "";
   state.codex.agentMessages = {};
   state.codex.itemNodes = {};
   state.codex.reasoningNodes = {};
@@ -4250,16 +4354,22 @@ function renderChatStatus() {
 function currentSessionStatus() {
   const bridge = state.codex.bridge;
   if (bridge.lastError) return "Error";
-  return state.codex.turnId || state.codex.actionInFlight ? "Working" : bridge.initialized ? "Ready" : bridge.running ? "Starting" : "Idle";
+  return state.codex.turnId || state.codex.threadStatus === "active" || state.codex.actionInFlight
+    ? "Working"
+    : bridge.initialized
+      ? "Ready"
+      : bridge.running
+        ? "Starting"
+        : "Idle";
 }
 
 function syncActionAvailability() {
-  const running = Boolean(state.codex.turnId);
+  const running = Boolean(state.codex.turnId || state.codex.threadStatus === "active");
   const busy = Boolean(state.codex.actionInFlight);
   const hasThread = Boolean(state.codex.threadId);
   const threadActionDisabled = !hasThread || running || busy;
-  els.interruptCodexTurn.hidden = !running;
-  els.interruptCodexTurn.disabled = !running;
+  els.interruptCodexTurn.hidden = !state.codex.turnId;
+  els.interruptCodexTurn.disabled = !state.codex.turnId;
   for (const button of [els.compactThread, els.reviewThread, els.forkThread, els.moreThreadActions]) {
     if (button) button.disabled = threadActionDisabled;
   }
