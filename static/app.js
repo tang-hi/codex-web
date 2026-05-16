@@ -54,6 +54,7 @@ const state = {
     threadStatus: "",
     threadStatusMessage: "",
     actionInFlight: "",
+    actionShowsWorking: false,
     history: {
       threadId: null,
       cursor: null,
@@ -74,6 +75,7 @@ const state = {
     planDeltas: {},
     approvalNodes: {},
     threadRuntime: {},
+    forkIdleThreadIds: new Set(),
     compactions: {},
     pendingTurnThreadId: "",
     turnHasVisibleOutput: false,
@@ -1517,6 +1519,52 @@ function rememberThreadConfigFromCodexResult(threadId, result, fallback = {}) {
   return mergeThreadConfig(threadId, combined, { overwrite: true });
 }
 
+function upsertThreadItemFromCodexResult(result, sourceThreadId, fallback = {}) {
+  const root = result?.threadStart || result || {};
+  const thread = root.thread || {};
+  if (!thread.id) return;
+
+  const existingIndex = state.items.findIndex((item) => item.id === thread.id);
+  const existing = existingIndex >= 0 ? state.items[existingIndex] : {};
+  const source = state.items.find((item) => item.id === sourceThreadId) || {};
+  const now = new Date().toISOString();
+  const item = {
+    ...existing,
+    id: thread.id,
+    title: thread.name || thread.title || existing.title || thread.preview || source.title || source.preview || "",
+    preview: thread.preview || existing.preview || source.preview || "",
+    cwd: thread.cwd || root.cwd || fallback.cwd || existing.cwd || source.cwd || "",
+    model: root.model || thread.model || fallback.model || existing.model || source.model || "",
+    reasoning_effort:
+      root.reasoningEffort ||
+      root.reasoning_effort ||
+      thread.reasoningEffort ||
+      thread.reasoning_effort ||
+      fallback.effort ||
+      existing.reasoning_effort ||
+      source.reasoning_effort ||
+      "",
+    createdAtIso: epochSecondsToIso(thread.createdAt) || existing.createdAtIso || now,
+    updatedAtIso: epochSecondsToIso(thread.updatedAt) || existing.updatedAtIso || now,
+    forkedFromId: thread.forkedFromId || sourceThreadId || existing.forkedFromId || "",
+  };
+
+  if (existingIndex >= 0) state.items[existingIndex] = item;
+  else state.items.unshift(item);
+  seedThreadConfigsFromItems([item]);
+  seedThreadMetadataFromItems([item]);
+  renderSidebarThreads();
+  renderThreadManager();
+  renderPersonalizationThreadPicker();
+  renderChatThreadLine();
+}
+
+function epochSecondsToIso(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  return new Date(seconds * 1000).toISOString();
+}
+
 function seedThreadConfigsFromItems(items) {
   for (const item of items || []) {
     mergeThreadConfig(item.id, configFromIndexedThread(item), { overwrite: false, persist: false });
@@ -2059,8 +2107,13 @@ function handleCodexEvent(event) {
   const method = message.method;
   const params = message.params || {};
 
-  rememberThreadRuntime(method, params);
+  const ignoreForkIdleRuntime = shouldIgnoreForkIdleNotification(method, params);
+  if (!ignoreForkIdleRuntime) rememberThreadRuntime(method, params);
   if (!notificationTargetsVisibleThread(method, params)) {
+    return;
+  }
+  if (ignoreForkIdleRuntime) {
+    renderChatStatus();
     return;
   }
   markVisibleThreadWorking(method, params);
@@ -2196,6 +2249,20 @@ function notificationTurnId(params) {
   return optionalText(params.turnId) || optionalText(params.turn_id) || optionalText(params.turn?.id);
 }
 
+function isForkedIdleThread(threadId) {
+  return Boolean(threadId && state.codex.forkIdleThreadIds.has(threadId));
+}
+
+function shouldIgnoreForkIdleNotification(method, params) {
+  const threadId = notificationThreadId(params);
+  if (!isForkedIdleThread(threadId)) return false;
+  if (method === "turn/started") return true;
+  if (method === "thread/status/changed") {
+    return normalizeThreadStatus(params.status || params.thread?.status || "") === "active";
+  }
+  return false;
+}
+
 function notificationTargetsVisibleThread(method, params) {
   const threadId = notificationThreadId(params);
   if (!threadId) return true;
@@ -2250,6 +2317,7 @@ function markVisibleThreadWorking(method, params) {
   const threadId = notificationThreadId(params);
   const turnId = notificationTurnId(params);
   if (!threadId || threadId !== state.codex.threadId || !turnId) return;
+  if (isForkedIdleThread(threadId)) return;
   if (state.codex.threadRuntime[threadId]?.completedTurnId === turnId) return;
   if (state.codex.turnId !== turnId) {
     state.codex.turnId = turnId;
@@ -2262,6 +2330,50 @@ function markVisibleThreadWorking(method, params) {
   } else {
     renderChatStatus();
   }
+}
+
+function activeTurnIdForSend(threadId) {
+  if (!threadId || isForkedIdleThread(threadId)) return "";
+  return state.codex.turnId || "";
+}
+
+function isNoActiveTurnToSteerError(error) {
+  return String(error?.message || error || "").includes("no active turn to steer");
+}
+
+function markForkedThreadIdle(threadId) {
+  if (!threadId) return;
+  state.codex.forkIdleThreadIds.add(threadId);
+  clearStaleActiveTurn(threadId);
+}
+
+function clearForkedThreadIdle(threadId) {
+  if (!threadId || !state.codex.forkIdleThreadIds.has(threadId)) return;
+  state.codex.forkIdleThreadIds.delete(threadId);
+}
+
+function clearStaleActiveTurn(threadId) {
+  if (!threadId) return;
+  const existing = state.codex.threadRuntime[threadId] || {};
+  state.codex.threadRuntime[threadId] = {
+    ...existing,
+    active: false,
+    turnId: "",
+    threadStatus: "",
+    threadStatusMessage: "",
+    visibleOutput: false,
+    updatedAt: Date.now(),
+  };
+  if (threadId === state.codex.threadId) {
+    state.codex.turnId = null;
+    state.codex.threadStatus = "";
+    state.codex.threadStatusMessage = "";
+    state.codex.turnHasVisibleOutput = false;
+    if (state.codex.activity === "Working") state.codex.activity = "";
+    syncActionAvailability();
+    renderChatStatus();
+  }
+  syncSidebarThreadItemStatus(threadId);
 }
 
 async function startNewCodexThread(clearTranscript = true, overrideOptions = null) {
@@ -2416,13 +2528,20 @@ async function sendCodexMessage(event) {
     saveActiveThreadConfig();
     const activeConfig = state.threadConfigs[state.codex.threadId];
     const options = activeConfig ? optionsFromThreadConfig(activeConfig) : chatOptions();
-    const body = { threadId: state.codex.threadId, text, attachments: uploadedAttachments, ...options };
-    if (state.codex.turnId) {
-      await postJson("/api/codex/steer", { ...body, turnId: state.codex.turnId });
-    } else {
-      beginPendingTurn(state.codex.threadId);
-      await postJson("/api/codex/turn", body);
+    const threadId = state.codex.threadId;
+    const body = { threadId, text, attachments: uploadedAttachments, ...options };
+    const activeTurnId = activeTurnIdForSend(threadId);
+    if (activeTurnId) {
+      try {
+        await postJson("/api/codex/steer", { ...body, turnId: activeTurnId });
+        return;
+      } catch (error) {
+        if (!isNoActiveTurnToSteerError(error)) throw error;
+        clearStaleActiveTurn(threadId);
+      }
     }
+    beginPendingTurn(threadId);
+    await postJson("/api/codex/turn", body);
   } catch (error) {
     clearPendingTurn(state.codex.threadId);
     appendChatLine("error", error.message);
@@ -2458,20 +2577,26 @@ function activeThreadForAction(actionLabel) {
   return state.codex.threadId;
 }
 
-async function runThreadAction(actionLabel, callback) {
+async function runThreadAction(actionLabel, callback, options = {}) {
   const threadId = activeThreadForAction(actionLabel);
   if (!threadId) return null;
   closeThreadActionMenu();
+  const showWorking = options.showWorking !== false;
   state.codex.actionInFlight = actionLabel;
-  setChatActivity(actionLabel);
+  state.codex.actionShowsWorking = showWorking;
+  if (showWorking) setChatActivity(actionLabel);
+  else renderChatStatus();
   try {
     return await callback(threadId);
   } catch (error) {
     appendChatLine("error", error.message);
     return null;
   } finally {
-    if (state.codex.actionInFlight === actionLabel) state.codex.actionInFlight = "";
-    if (!state.codex.turnId && state.codex.activity === actionLabel) setChatActivity("");
+    if (state.codex.actionInFlight === actionLabel) {
+      state.codex.actionInFlight = "";
+      state.codex.actionShowsWorking = false;
+    }
+    if (showWorking && !state.codex.turnId && state.codex.activity === actionLabel) setChatActivity("");
     else renderChatStatus();
   }
 }
@@ -2511,14 +2636,16 @@ async function forkActiveThread() {
     const id = result.thread && result.thread.id;
     if (!id) throw new Error("Fork did not return a thread id.");
     if (id) rememberThreadConfigFromCodexResult(id, result, options);
+    upsertThreadItemFromCodexResult(result, sourceThreadId, options);
     resetChatTranscript();
     setActiveThread(id);
     initializeHistoryPaging(id);
-    appendCompactInfo(`Forked from ${shortId(sourceThreadId)}`);
-    await loadInitialThreadHistory(id);
+    const renderedFork = renderForkedThread(result, sourceThreadId);
+    if (!renderedFork) await loadInitialThreadHistory(id);
+    markForkedThreadIdle(id);
     setChatActivity("Ready");
     loadThreads().catch((error) => console.debug("[threads refresh]", error.message));
-  });
+  }, { showWorking: false });
 }
 
 async function rollbackActiveThread() {
@@ -2572,21 +2699,6 @@ function hideActiveThread() {
   ]);
 }
 
-async function runShellCommandInThread() {
-  const threadId = activeThreadForAction("Shell command");
-  if (!threadId) return;
-  const command = window.prompt("Shell command to run in this Codex thread");
-  if (command === null) return;
-  const trimmed = command.trim();
-  if (!trimmed) return;
-  const ok = window.confirm("Run this command with full local filesystem access?");
-  if (!ok) return;
-  await runThreadAction("Running shell command", async () => {
-    await postJson("/api/codex/shell-command", { threadId, command: trimmed });
-    appendCompactInfo("Shell command sent");
-  });
-}
-
 function toggleThreadActionMenu() {
   const willOpen = els.moreThreadActionsMenu.hidden;
   closeChoiceMenus();
@@ -2609,7 +2721,6 @@ function handleThreadActionMenuClick(event) {
   else if (action === "rename") renameActiveThread();
   else if (action === "archive") archiveActiveThread();
   else if (action === "hide") hideActiveThread();
-  else if (action === "shell") runShellCommandInThread();
 }
 
 function renderServerRequest(request) {
@@ -4392,6 +4503,28 @@ function renderResumedThread(result) {
   renderThreadHistoryTurns(turns, "append");
 }
 
+function renderForkedThread(result, sourceThreadId) {
+  const thread = result.thread || result;
+  const turns = Array.isArray(thread.turns) ? thread.turns : Array.isArray(result.turns) ? result.turns : [];
+  const sourceLabel = sourceThreadId ? shortId(sourceThreadId) : "source thread";
+  appendCompactInfo(turns.length ? `Forked from ${sourceLabel} · copied ${formatNumber(turns.length)} turns` : `Forked from ${sourceLabel}`);
+  if (!turns.length) return false;
+
+  renderThreadHistoryTurns(turns, "append");
+  markHistoryTurnsLoaded(turns);
+  state.codex.history.initialized = true;
+  state.codex.history.cursor = null;
+  state.codex.history.hasMore = false;
+  return true;
+}
+
+function markHistoryTurnsLoaded(turns) {
+  const loaded = state.codex.history.loadedTurnIds;
+  for (const turn of turns || []) {
+    if (turn?.id) loaded.add(turn.id);
+  }
+}
+
 function historicalTurnItems(turn) {
   if (!turn || typeof turn !== "object") return [];
   if (Array.isArray(turn.itemsView)) return turn.itemsView;
@@ -4525,6 +4658,14 @@ function setActiveThread(id, options = {}) {
 }
 
 function applyThreadRuntimeToVisibleThread(threadId) {
+  if (isForkedIdleThread(threadId)) {
+    state.codex.turnId = null;
+    state.codex.threadStatus = "";
+    state.codex.threadStatusMessage = "";
+    state.codex.turnHasVisibleOutput = false;
+    if (state.codex.activity === "Working") state.codex.activity = "";
+    return;
+  }
   const runtime = state.codex.threadRuntime[threadId] || {};
   const running = Boolean(runtime.active && runtime.turnId);
   state.codex.turnId = running ? runtime.turnId : null;
@@ -4688,6 +4829,7 @@ function setChatActivity(text) {
 
 function beginPendingTurn(threadId) {
   if (!threadId) return;
+  clearForkedThreadIdle(threadId);
   state.codex.pendingTurnThreadId = threadId;
   if (threadId === state.codex.threadId) {
     state.codex.turnHasVisibleOutput = false;
@@ -4738,11 +4880,13 @@ function renderChatStatus() {
 function currentSessionStatus() {
   const bridge = state.codex.bridge;
   if (bridge.lastError) return "Error";
-  return state.codex.turnId ||
-    state.codex.threadStatus === "active" ||
-    hasPendingTurnForVisibleThread() ||
-    isCompactionPending(currentThreadCompaction()) ||
-    state.codex.actionInFlight
+  const forkIdle = isForkedIdleThread(state.codex.threadId);
+  return (!forkIdle &&
+    (state.codex.turnId ||
+      state.codex.threadStatus === "active" ||
+      hasPendingTurnForVisibleThread() ||
+      isCompactionPending(currentThreadCompaction()) ||
+      (state.codex.actionInFlight && state.codex.actionShowsWorking)))
     ? "Working"
     : bridge.initialized
       ? "Ready"
@@ -4753,7 +4897,8 @@ function currentSessionStatus() {
 
 function syncActionAvailability() {
   const compacting = isCompactionPending(currentThreadCompaction());
-  const running = Boolean(state.codex.turnId || state.codex.threadStatus === "active" || compacting || hasPendingTurnForVisibleThread());
+  const forkIdle = isForkedIdleThread(state.codex.threadId);
+  const running = Boolean(!forkIdle && (state.codex.turnId || state.codex.threadStatus === "active" || compacting || hasPendingTurnForVisibleThread()));
   const busy = Boolean(state.codex.actionInFlight);
   const hasThread = Boolean(state.codex.threadId);
   const threadActionDisabled = !hasThread || running || busy;
