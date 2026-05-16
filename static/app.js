@@ -72,6 +72,9 @@ const state = {
     changedFiles: [],
     runningCommand: "",
     contextBreakdown: null,
+    contextBreakdownThreadId: null,
+    contextBreakdownLoading: false,
+    contextBreakdownRefreshTimer: null,
     contextBreakdownEstimated: false,
     contextContributors: [],
     contextSuggestions: [],
@@ -1992,6 +1995,7 @@ function handleCodexEvent(event) {
     state.codex.turnId = params.turn && params.turn.id;
     syncActionAvailability();
     setChatActivity("Working");
+    scheduleThreadContextBreakdownRefresh(600);
     return;
   }
   if (method === "turn/completed") {
@@ -2002,6 +2006,7 @@ function handleCodexEvent(event) {
     state.codex.turnId = null;
     syncActionAvailability();
     setChatActivity("");
+    scheduleThreadContextBreakdownRefresh(1200);
     return;
   }
   if (method === "turn/plan/updated") {
@@ -3502,10 +3507,16 @@ function updateTokenUsage(params) {
     input,
     output,
   };
-  state.codex.contextBreakdown = normalizeContextBreakdown(params);
-  state.codex.contextBreakdownEstimated = false;
-  state.codex.contextContributors = [];
-  state.codex.contextSuggestions = [];
+  const contextBreakdown = normalizeContextBreakdown(params);
+  if (contextBreakdown) {
+    state.codex.contextBreakdown = contextBreakdown;
+    state.codex.contextBreakdownThreadId = state.codex.threadId;
+    state.codex.contextBreakdownEstimated = false;
+    state.codex.contextContributors = [];
+    state.codex.contextSuggestions = [];
+  } else {
+    scheduleThreadContextBreakdownRefresh(500);
+  }
   renderChatStatus();
 }
 
@@ -3865,6 +3876,13 @@ function textFromContent(value) {
 
 function setActiveThread(id, options = {}) {
   state.codex.threadId = id;
+  if (state.codex.contextBreakdownThreadId !== id) {
+    state.codex.contextBreakdown = null;
+    state.codex.contextBreakdownThreadId = null;
+    state.codex.contextBreakdownEstimated = false;
+    state.codex.contextContributors = [];
+    state.codex.contextSuggestions = [];
+  }
   if (id) {
     const item = state.items.find((entry) => entry.id === id);
     updateThreadMetadata(
@@ -3886,15 +3904,43 @@ function setActiveThread(id, options = {}) {
   loadThreadContextBreakdown(id);
 }
 
-async function loadThreadContextBreakdown(threadId) {
+function hasCurrentContextBreakdown(threadId = state.codex.threadId) {
+  return Boolean(
+    threadId &&
+      state.codex.contextBreakdownThreadId === threadId &&
+      Array.isArray(state.codex.contextBreakdown) &&
+      state.codex.contextBreakdown.length,
+  );
+}
+
+function scheduleThreadContextBreakdownRefresh(delayMs = 600) {
+  const threadId = state.codex.threadId;
   if (!threadId) return;
+  if (state.codex.contextBreakdownRefreshTimer) {
+    window.clearTimeout(state.codex.contextBreakdownRefreshTimer);
+  }
+  state.codex.contextBreakdownRefreshTimer = window.setTimeout(() => {
+    state.codex.contextBreakdownRefreshTimer = null;
+    loadThreadContextBreakdown(threadId, { preserveExisting: true });
+  }, delayMs);
+}
+
+async function loadThreadContextBreakdown(threadId, options = {}) {
+  if (!threadId) return;
+  if (state.codex.contextBreakdownLoading === threadId) return;
+  state.codex.contextBreakdownLoading = threadId;
   try {
     const data = await api(`/api/threads/${encodeURIComponent(threadId)}/context`);
     if (state.codex.threadId !== threadId) return;
-    state.codex.contextBreakdown = data.items || [];
-    state.codex.contextBreakdownEstimated = Boolean(data.estimated);
-    state.codex.contextContributors = data.contributors || [];
-    state.codex.contextSuggestions = data.suggestions || [];
+    const items = Array.isArray(data.items) ? data.items : [];
+    const preserveExisting = options.preserveExisting !== false && hasCurrentContextBreakdown(threadId);
+    if (items.length || !preserveExisting) {
+      state.codex.contextBreakdown = items;
+      state.codex.contextBreakdownThreadId = threadId;
+      state.codex.contextBreakdownEstimated = Boolean(data.estimated);
+      state.codex.contextContributors = data.contributors || [];
+      state.codex.contextSuggestions = data.suggestions || [];
+    }
     if (!state.codex.tokenUsage && data.totalTokens) {
       state.codex.tokenUsage = {
         used: data.totalTokens,
@@ -3908,6 +3954,10 @@ async function loadThreadContextBreakdown(threadId) {
     renderChatStatus();
   } catch (error) {
     console.debug("[context breakdown]", error.message);
+  } finally {
+    if (state.codex.contextBreakdownLoading === threadId) {
+      state.codex.contextBreakdownLoading = false;
+    }
   }
 }
 
@@ -3927,6 +3977,11 @@ function resetChatTranscript() {
   state.codex.runningCommand = "";
   state.codex.tokenUsage = null;
   state.codex.contextBreakdown = null;
+  state.codex.contextBreakdownThreadId = null;
+  if (state.codex.contextBreakdownRefreshTimer) {
+    window.clearTimeout(state.codex.contextBreakdownRefreshTimer);
+    state.codex.contextBreakdownRefreshTimer = null;
+  }
   state.codex.contextBreakdownEstimated = false;
   state.codex.contextContributors = [];
   state.codex.contextSuggestions = [];
@@ -4191,7 +4246,7 @@ function renderContextStatus() {
 function renderContextInspector() {
   if (!els.contextUsageValue) return;
   const usage = state.codex.tokenUsage || {};
-  const breakdown = state.codex.contextBreakdown || [];
+  const breakdown = hasCurrentContextBreakdown() ? state.codex.contextBreakdown || [] : [];
   const hasUsage = usage.used !== null && usage.used !== undefined;
   const hasWindow = usage.windowTokens !== null && usage.windowTokens !== undefined;
 
