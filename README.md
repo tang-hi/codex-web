@@ -10,7 +10,33 @@
 
 ## Demo
 
-![Codex Web workspace](docs/demo/01-workspace.png)
+<table>
+  <tr>
+    <td colspan="2">
+      <img src="docs/demo/01-workspace.png" alt="Codex Web workspace with thread navigation, chat, and details inspector" />
+      <br />
+      <strong>Workspace</strong>
+      <br />
+      Chat with Codex while keeping thread navigation and session details visible.
+    </td>
+  </tr>
+  <tr>
+    <td width="58%">
+      <img src="docs/demo/02-thread-manager.png" alt="Manage threads overlay" />
+      <br />
+      <strong>Thread Library</strong>
+      <br />
+      Search, filter, rename, pin, archive, hide, and restore threads using local metadata.
+    </td>
+    <td width="42%">
+      <img src="docs/demo/03-context.png" alt="Context inspector" />
+      <br />
+      <strong>Context Inspector</strong>
+      <br />
+      See context health, category usage, and the largest contributors in the current thread.
+    </td>
+  </tr>
+</table>
 
 ## What It Provides
 

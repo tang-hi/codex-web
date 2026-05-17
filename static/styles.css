@@ -697,6 +697,19 @@ tbody tr:last-child td {
   text-transform: uppercase;
 }
 
+.thread-nav-actions {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.sidebar-refresh-button {
+  flex: 0 0 auto;
+  font-size: 15px;
+  min-height: 30px;
+  width: 30px;
+}
+
 .sidebar-new-button {
   min-height: 30px;
   padding: 0 10px;

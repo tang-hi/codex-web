@@ -32,6 +32,7 @@ const state = {
     sort: "recent",
     selectedIds: new Set(),
   },
+  threadsRefreshing: false,
   detailsTab: "overview",
   renameTargetThreadId: "",
   toastTimer: null,
@@ -177,6 +178,7 @@ const els = {
   resumeThreadId: document.getElementById("resumeThreadId"),
   interruptCodexTurn: document.getElementById("interruptCodexTurn"),
   sidebarThreadCount: document.getElementById("sidebarThreadCount"),
+  sidebarRefreshThreads: document.getElementById("sidebarRefreshThreads"),
   sidebarNewThread: document.getElementById("sidebarNewThread"),
   sidebarThreadSearch: document.getElementById("sidebarThreadSearch"),
   sidebarThreads: document.getElementById("sidebarThreads"),
@@ -422,10 +424,35 @@ async function loadThreads() {
 
 function refreshThreadIndexAndList(delayMs = 0) {
   window.setTimeout(() => {
-    postJson("/api/index/rebuild", {})
-      .then(loadThreads)
-      .catch((error) => console.debug("[threads refresh]", error.message));
+    rebuildThreadIndexAndLoadThreads().catch((error) => console.debug("[threads refresh]", error.message));
   }, delayMs);
+}
+
+async function rebuildThreadIndexAndLoadThreads() {
+  await postJson("/api/index/rebuild", {});
+  await loadThreads();
+}
+
+async function refreshSidebarThreads() {
+  if (state.threadsRefreshing) return;
+  state.threadsRefreshing = true;
+  renderThreadRefreshState();
+  try {
+    await rebuildThreadIndexAndLoadThreads();
+    showToast("Threads refreshed.");
+  } catch (error) {
+    showToast(`Refresh failed: ${error.message}`);
+  } finally {
+    state.threadsRefreshing = false;
+    renderThreadRefreshState();
+  }
+}
+
+function renderThreadRefreshState() {
+  if (!els.sidebarRefreshThreads) return;
+  els.sidebarRefreshThreads.disabled = state.threadsRefreshing;
+  els.sidebarRefreshThreads.textContent = state.threadsRefreshing ? "..." : "↻";
+  els.sidebarRefreshThreads.title = state.threadsRefreshing ? "Refreshing threads..." : "Refresh threads";
 }
 
 function mergeLocalThreadItems(serverItems) {
@@ -6721,6 +6748,7 @@ els.sidebarThreadSearch.addEventListener("input", () => {
   renderSidebarThreads();
 });
 els.sidebarThreads.addEventListener("scroll", closeThreadItemMenus, { passive: true });
+els.sidebarRefreshThreads.addEventListener("click", () => refreshSidebarThreads());
 els.openThreadManager.addEventListener("click", () => openThreadManager("active"));
 els.closeThreadManager.addEventListener("click", closeThreadManager);
 els.threadManagerModal.addEventListener("click", (event) => {
