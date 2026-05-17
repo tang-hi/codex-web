@@ -1,72 +1,51 @@
-<p align="center">
-  <img src="static/favicon.svg" alt="Codex Web logo" width="72" height="72" />
-</p>
+# Codex Web
 
-<h1 align="center">Codex Web</h1>
+A local browser workspace for Codex: manage threads, chat with Codex, inspect context, and so on
 
-<p align="center">
-  A local Codex web workspace for managing threads, chatting with Codex, inspecting context, and safely preparing AGENTS.md updates.
-</p>
+![Codex Web workspace](docs/assets/workspace.png)
 
-## Demo
+## Highlights
 
-<table>
-  <tr>
-    <td colspan="2">
-      <img src="docs/demo/01-workspace.png" alt="Codex Web workspace with thread navigation, chat, and details inspector" />
-      <br />
-      <strong>Workspace</strong>
-      <br />
-      Chat with Codex while keeping thread navigation and session details visible.
-    </td>
-  </tr>
-  <tr>
-    <td width="58%">
-      <img src="docs/demo/02-thread-manager.png" alt="Manage threads overlay" />
-      <br />
-      <strong>Thread Library</strong>
-      <br />
-      Search, filter, rename, pin, archive, hide, and restore threads using local metadata.
-    </td>
-    <td width="42%">
-      <img src="docs/demo/03-context.png" alt="Context inspector" />
-      <br />
-      <strong>Context Inspector</strong>
-      <br />
-      See context health, category usage, and the largest contributors in the current thread.
-    </td>
-  </tr>
-</table>
+- Chat with Codex in a local browser workspace.
+- Search, rename, pin, archive, hide, and restore threads using local metadata.
+- Inspect session status, changed files, running commands, and context usage.
+- Review context health and largest context contributors when attribution is available.
+- Keep raw diffs visible in the chat flow.
 
-## What It Provides
+## What This Is
 
-Codex Web brings the everyday Codex workflow into a local browser interface:
+Codex Web is a local web UI for working with Codex threads that already live on your machine. It focuses on day-to-day thread navigation, chat, context inspection, file-change review, and safe AGENTS.md personalization.
 
-- **Chat Workspace**: chat with Codex in the current thread, start new threads, attach images, compact context, review changes, and fork threads.
-- **Thread Navigator**: quickly search and switch active threads from the left sidebar, with local rename, pin, archive, hide, and restore actions.
-- **Manage threads**: use an overlay to manage Active / Archived / Hidden / All threads when you need broader cleanup.
-- **Details Inspector**: inspect the current thread status, thread id, time window, context usage, changed files, running command, and configuration.
-- **Context Inspector**: understand where context is being spent, including top categories and largest contributors when attribution is available.
-- **Diff rendering**: file changes are shown as readable diffs in the chat flow and preview surfaces.
-- **Personalize Codex**: run a temporary Codex analysis over past threads and turn repeated workflow patterns into reviewable AGENTS.md suggestions.
+## What This Is Not
 
-Thread rename, archive, hide, restore, and pin are local metadata operations. They do not delete Codex threads and do not call Codex rename/delete/archive APIs.
+- It is not a hosted Codex service.
+- It is not a replacement for the Codex CLI.
+- It does not delete or remotely mutate Codex threads.
 
-## Requirements
+## Safety Model
 
-You need:
+Codex Web is intentionally conservative:
+
+- Thread rename, archive, hide, restore, and pin are local metadata operations.
+- Codex Web does not delete Codex threads.
+- Codex Web does not call Codex rename/delete/archive APIs.
+- Hidden threads can be restored from Manage threads.
+
+## Quick Start
+
+### Requirements
 
 - Python 3.11+
-- The `codex` CLI installed and logged in locally
+- Codex CLI installed and logged in locally
 - Existing local Codex data under `~/.codex`
 
-By default, Codex Web reads:
+By default Codex Web reads:
 
 - `~/.codex/state_5.sqlite`
 - `~/.codex/sessions`
 - `~/.codex/archived_sessions`
 
-## Start
+### Start The Server
 
 Use the helper script:
 
@@ -88,68 +67,124 @@ Common commands:
 ./run.sh stop
 ```
 
-To bind only to localhost or use a different Codex data directory:
+Custom host, port, or Codex home:
 
 ```bash
-python3 -m codex_threads_manager.server --host 127.0.0.1 --port 3217 --codex-home ~/.codex
+python3 -m codex_threads_manager.server \
+  --host 127.0.0.1 \
+  --port 3217 \
+  --codex-home ~/.codex
 ```
 
-## How To Use
+## Demo
 
-### Chat With Codex
+### Workspace
 
-1. Pick an existing thread from the left sidebar, or click `+ New` to start a new one.
-2. Choose the project path, model, reasoning effort, and fast mode.
-3. Type a message in the composer and send it.
-4. Attach images when the task needs visual input.
-5. Use `Compact context` when the conversation is getting large.
-6. Use `Review changes` when you want Codex to inspect the current code changes.
-7. Use `Fork thread` when you want to branch from the current conversation.
+Chat with Codex while keeping thread navigation and session details visible.
 
-### Manage Threads
+![Workspace](docs/assets/workspace.png)
+
+### Thread Library
+
+Search, filter, rename, pin, archive, hide, and restore threads locally.
+
+![Manage threads](docs/assets/manage-threads.png)
+
+### Context Inspector
+
+See context health, category usage, and largest contributors.
+
+![Context inspector](docs/assets/context-inspector.png)
+
+## Features
+
+### Chat Workspace
+
+- Chat with Codex in the current thread.
+- Start new threads.
+- Attach images when a task needs visual input.
+- Compact context.
+- Review current code changes.
+- Fork threads.
+- Keep diffs readable in the chat flow.
+
+### Thread Navigator
 
 The left sidebar is for daily navigation:
 
-- Search active threads
-- Open a thread
-- Rename a thread locally
-- Pin important threads
-- Archive completed threads
-- Hide threads you do not want in the sidebar
+- Search active threads.
+- Open recent threads.
+- Refresh the local thread index.
+- Rename threads locally.
+- Pin important threads.
+- Archive completed threads.
+- Hide threads you do not want in the sidebar.
 
-Use `Manage threads` for broader cleanup:
+### Manage Threads
 
-- View Active / Archived / Hidden / All threads
-- Search historical threads
-- Restore threads from Archived or Hidden
-- Batch archive / hide / restore / pin selected threads
-- Filter by project and sort the list
+Use the Manage threads overlay for broader cleanup:
 
-### Inspect The Current Thread
+- View Active / Archived / Hidden / All threads.
+- Search historical threads.
+- Restore threads from Archived or Hidden.
+- Batch archive / hide / restore / pin selected threads.
+- Filter by project and sort the list.
 
-Open the right Details Inspector to see:
+### Details Inspector
 
-- Current status
-- Thread id
-- Context usage
-- Time window remaining
-- Changed files
-- Running command
-- Context contributors
-- Current thread configuration
+Use the right-side inspector to review:
+
+- Current status.
+- Thread id.
+- Context usage.
+- Time window remaining.
+- Changed files.
+- Running command.
+- Context contributors.
+- Current thread configuration.
+
+### Context Inspector
+
+The Context tab helps explain where context is being spent:
+
+- Overall context health.
+- Estimated token usage.
+- Category usage.
+- Largest contributors when attribution is available.
+- Honest fallback states when detailed attribution is unavailable.
 
 ### Personalize Codex
 
-Use `Personalize Codex` to let Codex summarize durable working preferences from past threads.
+Personalize Codex helps convert repeated workflow patterns into reviewable AGENTS.md suggestions.
 
 The flow is review-first:
 
 1. Choose a learning scope: current project, all projects, selected threads, or the last 30 days.
 2. Choose whether Active / Archived / Hidden threads are included.
-3. Codex runs a temporary analysis task. It does not create a normal thread.
-4. Review each suggestion after the analysis completes.
+3. Run a temporary analysis task.
+4. Review each suggestion.
 5. Edit, deselect, ignore, or choose Global / Project AGENTS.md for each rule.
-6. Preview the exact diff before writing.
-7. Click `Apply changes` only when you are ready to update AGENTS.md.
+6. Preview the exact diff.
+7. Apply changes only after review.
 
 Codex Web never writes AGENTS.md automatically.
+
+## Local Metadata Behavior
+
+Thread management actions are local-only.
+
+| Action  | What happens                               | Codex thread affected? |
+| ------- | ------------------------------------------ | ---------------------- |
+| Rename  | Updates local `displayName`                | No                     |
+| Pin     | Updates local metadata                     | No                     |
+| Archive | Moves thread out of default sidebar view   | No                     |
+| Hide    | Hides thread from normal views             | No                     |
+| Restore | Makes archived/hidden thread visible again | No                     |
+
+``
+
+## Notes And Limitations
+
+- Codex Web reads local Codex data.
+- Thread management metadata is local to Codex Web.
+- Context attribution may be unavailable for some threads.
