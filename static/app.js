@@ -6,6 +6,7 @@ const THREAD_VISIBILITIES = new Set(["active", "archived", "hidden"]);
 const IMAGE_ATTACHMENT_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const MAX_IMAGE_ATTACHMENTS = 5;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const CHAT_AUTO_FOLLOW_THRESHOLD_PX = 96;
 const PERSONALIZATION_STEPS = [
   { id: 1, label: "Scope" },
   { id: 2, label: "Analyze" },
@@ -99,6 +100,7 @@ const state = {
     contextBreakdownRefreshTimer: null,
     contextBreakdownEstimated: false,
     contextContributors: [],
+    autoFollowChat: true,
   },
 };
 
@@ -3547,7 +3549,7 @@ function appendChatLine(kind, text, attachments = []) {
     entry.append(title, body);
   }
   els.chatLog.appendChild(entry);
-  scrollChatToBottom();
+  scrollChatToBottom({ force: kind === "user" });
 }
 
 function upsertCodexItem(item, lifecycle) {
@@ -5437,6 +5439,7 @@ function resetChatTranscript() {
   state.codex.contextContributors = [];
   state.codex.pendingTurnThreadId = "";
   state.codex.turnHasVisibleOutput = false;
+  state.codex.autoFollowChat = true;
   resetHistoryPaging();
   syncActionAvailability();
   renderChatThreadLine();
@@ -5645,7 +5648,7 @@ function renderWorkingIndicator() {
   const indicator = els.chatWorkingIndicator;
   if (!indicator) return;
   const shell = indicator.closest(".chat-log-shell");
-  const shouldStickToBottom = chatAtBottom();
+  const shouldStickToBottom = state.codex.autoFollowChat || chatAtBottom(CHAT_AUTO_FOLLOW_THRESHOLD_PX);
   const show = Boolean(
     state.codex.threadId &&
       currentSessionStatus() === "Working" &&
@@ -6345,8 +6348,12 @@ function nextSpeechNode() {
   return null;
 }
 
-function chatAtBottom() {
-  return els.chatLog.scrollHeight - els.chatLog.scrollTop - els.chatLog.clientHeight <= 36;
+function chatAtBottom(threshold = 36) {
+  return els.chatLog.scrollHeight - els.chatLog.scrollTop - els.chatLog.clientHeight <= threshold;
+}
+
+function updateChatAutoFollowState() {
+  state.codex.autoFollowChat = chatAtBottom(CHAT_AUTO_FOLLOW_THRESHOLD_PX);
 }
 
 function chatAtTop() {
@@ -6389,7 +6396,7 @@ function jumpToNextSpeech() {
 
 function jumpToLatestMessage() {
   setJumpNavAnchorFromCompact("latest");
-  scrollChatToBottom({ smooth: true });
+  scrollChatToBottom({ force: true, smooth: true });
 }
 
 function updateMessageJumpNav() {
@@ -6432,11 +6439,17 @@ function updateMessageJumpNav() {
 
 function scrollChatToBottom(options = {}) {
   updateChatEmptyState();
+  const shouldScroll = options.force || state.codex.autoFollowChat || chatAtBottom(CHAT_AUTO_FOLLOW_THRESHOLD_PX);
+  if (!shouldScroll) {
+    updateMessageJumpNav();
+    return;
+  }
   if (options.smooth) {
     els.chatLog.scrollTo({ top: els.chatLog.scrollHeight, behavior: "smooth" });
   } else {
     els.chatLog.scrollTop = els.chatLog.scrollHeight;
   }
+  state.codex.autoFollowChat = true;
   updateMessageJumpNav();
 }
 
@@ -6935,6 +6948,7 @@ els.chatLog.addEventListener("click", (event) => {
 els.chatLog.addEventListener(
   "scroll",
   () => {
+    updateChatAutoFollowState();
     maybeLoadOlderHistory();
     updateMessageJumpNav();
   },
