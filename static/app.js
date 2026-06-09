@@ -7,6 +7,28 @@ const IMAGE_ATTACHMENT_TYPES = new Set(["image/png", "image/jpeg", "image/webp",
 const MAX_IMAGE_ATTACHMENTS = 5;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const CHAT_AUTO_FOLLOW_THRESHOLD_PX = 96;
+const FILE_PREVIEW_LANGUAGE_ALIASES = {
+  cjs: "javascript",
+  h: "cpp",
+  htm: "xml",
+  html: "xml",
+  hpp: "cpp",
+  js: "javascript",
+  jsx: "javascript",
+  markdown: "markdown",
+  md: "markdown",
+  mjs: "javascript",
+  mk: "makefile",
+  py: "python",
+  rb: "ruby",
+  sh: "bash",
+  svg: "xml",
+  toml: "ini",
+  ts: "typescript",
+  tsx: "typescript",
+  yml: "yaml",
+  zsh: "bash",
+};
 const PERSONALIZATION_STEPS = [
   { id: 1, label: "Scope" },
   { id: 2, label: "Analyze" },
@@ -39,6 +61,9 @@ const state = {
   toastTimer: null,
   composerAttachments: [],
   composerUploading: false,
+  filePreview: {
+    rawUrl: "",
+  },
   personalization: {
     step: 1,
     analyzing: false,
@@ -256,6 +281,13 @@ const els = {
   agentsTargetSummary: document.getElementById("agentsTargetSummary"),
   agentsPreviewMeta: document.getElementById("agentsPreviewMeta"),
   agentsDiffPreview: document.getElementById("agentsDiffPreview"),
+  filePreviewModal: document.getElementById("filePreviewModal"),
+  closeFilePreview: document.getElementById("closeFilePreview"),
+  filePreviewTitle: document.getElementById("filePreviewTitle"),
+  filePreviewMeta: document.getElementById("filePreviewMeta"),
+  filePreviewPath: document.getElementById("filePreviewPath"),
+  filePreviewContent: document.getElementById("filePreviewContent"),
+  filePreviewOpenRaw: document.getElementById("filePreviewOpenRaw"),
 };
 
 const markdownRenderer = createMarkdownRenderer();
@@ -570,6 +602,19 @@ function threadProjectPath(itemOrId) {
   const id = typeof itemOrId === "string" ? itemOrId : item?.id;
   const metadata = threadMetadata(id);
   return metadata.projectPath || item?.cwd || "";
+}
+
+function threadConfiguredCwd(threadId = state.codex.threadId) {
+  if (!threadId) return "";
+  return normalizeThreadConfig(state.threadConfigs[threadId] || {}).cwd || "";
+}
+
+function activeConfiguredCwd() {
+  return els.chatCwd.value.trim() || threadConfiguredCwd(state.codex.threadId);
+}
+
+function activeDisplayCwd() {
+  return activeConfiguredCwd() || threadProjectPath(state.codex.threadId) || "";
 }
 
 function threadUpdatedAt(item) {
@@ -2207,7 +2252,7 @@ function syncCwdButton() {
   markChoiceMenuSelection(els.chatCwdMenu, value);
   markChoiceMenuSelection(els.workspaceMenu, value);
   updateChatEmptyState();
-  renderActivitySidebar();
+  renderChatStatus();
 }
 
 function updateEffortOptions(preferredEffort = els.chatEffort.value, preferredServiceTier) {
@@ -4630,9 +4675,259 @@ function inlineMarkdown(value) {
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
-      const safeHref = String(href || "").startsWith("http") ? href : "#";
+      const safeHref = markdownHref(href);
       return `<a href="${escapeAttr(safeHref)}" target="_blank" rel="noreferrer">${label}</a>`;
     });
+}
+
+function markdownHref(href) {
+  const value = String(href || "").trim();
+  if (!value) return "#";
+  if (/^(https?:|mailto:|tel:|file:\/\/)/i.test(value)) return value;
+  if (/^(\/|\.\/|\.\.\/|~\/)/.test(value)) return value;
+  if (value.includes("/") || /:\d+(?::\d+)?$/.test(value)) return value;
+  return "#";
+}
+
+function localFileReferenceFromAnchor(anchor) {
+  const rawHref = String(anchor?.getAttribute("href") || "").trim();
+  if (!rawHref || rawHref === "#") return null;
+
+  let href = rawHref;
+  if (/^(mailto:|tel:|data:|javascript:)/i.test(href)) return null;
+  if (/^https?:/i.test(href)) {
+    let url = null;
+    try {
+      url = new URL(href);
+    } catch {
+      return null;
+    }
+    if (url.origin !== window.location.origin) return null;
+    href = `${url.pathname}${url.search}${url.hash}`;
+  } else if (/^file:\/\//i.test(href)) {
+    try {
+      href = new URL(href).pathname;
+    } catch {
+      return null;
+    }
+  }
+
+  const reference = splitFilePathAndLine(decodeURIComponentSafe(href));
+  if (!reference || !looksLikeLocalFilePath(reference.path, reference.line)) return null;
+  return reference;
+}
+
+function decodeURIComponentSafe(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function splitFilePathAndLine(value) {
+  let text = String(value || "").trim();
+  if (!text) return null;
+  const angleWrapped = text.match(/^<(.+)>$/);
+  if (angleWrapped) text = angleWrapped[1].trim();
+
+  let line = null;
+  let match = text.match(/^(.+)#L(\d+)$/i);
+  if (match) {
+    text = match[1];
+    line = parsePositiveLine(match[2]);
+  } else {
+    match = text.match(/^(.+)\?(?:line|ln|l)=(\d+)$/i);
+    if (match) {
+      text = match[1];
+      line = parsePositiveLine(match[2]);
+    } else {
+      match = text.match(/^(.+):(\d+)(?::\d+)?$/);
+      if (match) {
+        text = match[1];
+        line = parsePositiveLine(match[2]);
+      }
+    }
+  }
+
+  text = text.split(/[?#]/)[0].trim();
+  if (!text) return null;
+  return { path: text, line };
+}
+
+function parsePositiveLine(value) {
+  const line = Number.parseInt(value, 10);
+  return Number.isFinite(line) && line > 0 ? line : null;
+}
+
+function looksLikeLocalFilePath(path, line = null) {
+  const value = String(path || "");
+  if (!value) return false;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return false;
+  if (value.startsWith("/api/") || value.startsWith("/vendor/")) return false;
+  if (line) return /^(\/|\.\/|\.\.\/|~\/)/.test(value) || value.includes("/") || value.includes("\\") || Boolean(value);
+  if (/^(\/home\/|\/Users\/|\/tmp\/|\/var\/|\/opt\/|~\/|\.\/|\.\.\/)/.test(value)) return true;
+  if (value.includes("/") || value.includes("\\")) return looksLikeNamedFile(value);
+  return looksLikeNamedFile(value);
+}
+
+function looksLikeNamedFile(path) {
+  const name = pathBasename(path);
+  if (/\.[a-z0-9]{1,12}$/i.test(name)) return true;
+  return /^(AGENTS|Dockerfile|Gemfile|LICENSE|Makefile|README|Rakefile)$/i.test(name);
+}
+
+async function openFilePreview(reference) {
+  const path = String(reference?.path || "").trim();
+  if (!path) return;
+
+  const line = parsePositiveLine(reference.line);
+  const cwd = activeFilePreviewRoot();
+  state.filePreview.rawUrl = fileApiUrl(path, { cwd });
+  showFilePreviewShell(path, line);
+
+  try {
+    const data = await api(fileApiUrl(path, { cwd, format: "json" }));
+    renderFilePreview(data, { path, line });
+  } catch (error) {
+    els.filePreviewMeta.textContent = "Could not read file";
+    els.filePreviewContent.innerHTML = `<div class="file-preview-status error">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function activeFilePreviewRoot() {
+  return activeConfiguredCwd() || threadProjectPath(state.codex.threadId) || state.projectRoot || "";
+}
+
+function fileApiUrl(path, options = {}) {
+  const query = new URLSearchParams({ path: String(path || "") });
+  if (options.cwd) query.set("cwd", options.cwd);
+  if (options.format) query.set("format", options.format);
+  return `/api/file?${query.toString()}`;
+}
+
+function showFilePreviewShell(path, line = null) {
+  els.filePreviewModal.hidden = false;
+  els.filePreviewTitle.textContent = filePreviewTitle(path, line);
+  els.filePreviewMeta.textContent = "Loading file...";
+  els.filePreviewPath.textContent = path;
+  els.filePreviewPath.title = path;
+  els.filePreviewContent.innerHTML = '<div class="file-preview-status">Loading file...</div>';
+}
+
+function renderFilePreview(data, reference) {
+  const path = String(data.path || reference.path || "");
+  const line = parsePositiveLine(reference.line);
+  const lines = previewLines(data.content);
+  const language = filePreviewLanguage(path, data.mimeType);
+  const highlightedLines = highlightedPreviewLines(lines, language);
+  const targetLine = line && line <= lines.length ? line : null;
+  const lineHtml = lines
+    .map((text, index) => {
+      const number = index + 1;
+      const highlighted = number === targetLine ? " highlighted" : "";
+      const code = highlightedLines[index] || escapeHtml(String(text || "").replace(/\r$/, ""));
+      return `
+        <div class="file-preview-line${highlighted}" data-line-number="${number}">
+          <span class="file-preview-line-number">${number}</span>
+          <code>${code || " "}</code>
+        </div>
+      `;
+    })
+    .join("");
+
+  els.filePreviewTitle.textContent = filePreviewTitle(path, line);
+  els.filePreviewPath.textContent = path;
+  els.filePreviewPath.title = path;
+  els.filePreviewMeta.textContent = filePreviewMeta(data, lines.length, line, language);
+  els.filePreviewContent.innerHTML = lineHtml || '<div class="file-preview-status">Empty file</div>';
+  if (targetLine) scrollFilePreviewToLine(targetLine);
+}
+
+function previewLines(content) {
+  const lines = String(content ?? "").split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  return lines.length ? lines : [""];
+}
+
+function highlightedPreviewLines(lines, language) {
+  return lines.map((line) => highlightPreviewLine(String(line || "").replace(/\r$/, ""), language));
+}
+
+function highlightPreviewLine(line, language) {
+  const hljs = window.hljs;
+  if (!line || !hljs || !language || !hljs.getLanguage(language)) return escapeHtml(line);
+  try {
+    return hljs.highlight(line, { language, ignoreIllegals: true }).value;
+  } catch {
+    return escapeHtml(line);
+  }
+}
+
+function filePreviewLanguage(path, mimeType = "") {
+  const basename = pathBasename(path).toLowerCase();
+  const namedLanguages = {
+    dockerfile: "dockerfile",
+    makefile: "makefile",
+  };
+  const named = namedLanguages[basename];
+  const extension = basename.includes(".") ? basename.split(".").pop() : "";
+  const candidates = [named, FILE_PREVIEW_LANGUAGE_ALIASES[extension], extension, mimeLanguage(mimeType)].filter(Boolean);
+  return candidates.find(isKnownHighlightLanguage) || "";
+}
+
+function mimeLanguage(mimeType) {
+  const value = String(mimeType || "").toLowerCase();
+  if (value.includes("javascript")) return "javascript";
+  if (value.includes("json")) return "json";
+  if (value.includes("typescript")) return "typescript";
+  if (value.includes("xml")) return "xml";
+  if (value.includes("yaml") || value.includes("yml")) return "yaml";
+  if (value.includes("html")) return "xml";
+  if (value.includes("css")) return "css";
+  return "";
+}
+
+function isKnownHighlightLanguage(language) {
+  return Boolean(language && window.hljs?.getLanguage(language));
+}
+
+function filePreviewTitle(path, line = null) {
+  const label = relativeProjectPath(path) || pathBasename(path) || "File Preview";
+  return line ? `${label}:${line}` : label;
+}
+
+function pathBasename(path) {
+  const parts = String(path || "").split(/[\\/]/);
+  return parts[parts.length - 1] || "";
+}
+
+function filePreviewMeta(data, lineCount, requestedLine = null, language = "") {
+  const parts = [];
+  if (Number.isFinite(Number(data.size))) parts.push(formatBytes(data.size));
+  parts.push(`${formatNumber(lineCount)} ${lineCount === 1 ? "line" : "lines"}`);
+  if (language) parts.push(language);
+  if (data.truncated) parts.push("truncated");
+  if (data.binary) parts.push("binary decoded as text");
+  if (requestedLine && requestedLine > lineCount) parts.push(`line ${formatNumber(requestedLine)} is past EOF`);
+  return parts.join(" · ");
+}
+
+function scrollFilePreviewToLine(line) {
+  window.requestAnimationFrame(() => {
+    const target = els.filePreviewContent.querySelector(`[data-line-number="${line}"]`);
+    if (target) target.scrollIntoView({ block: "center" });
+  });
+}
+
+function closeFilePreview() {
+  els.filePreviewModal.hidden = true;
+  state.filePreview.rawUrl = "";
+  els.filePreviewContent.innerHTML = "";
+  els.filePreviewTitle.textContent = "File Preview";
+  els.filePreviewMeta.textContent = "No file selected";
+  els.filePreviewPath.textContent = "";
+  els.filePreviewPath.title = "";
 }
 
 function applyBridgeStatus(status) {
@@ -5251,7 +5546,7 @@ function setActiveThread(id, options = {}) {
     updateThreadMetadata(
       id,
       {
-        projectPath: threadProjectPath(item || id) || els.chatCwd.value || "",
+        projectPath: threadConfiguredCwd(id) || els.chatCwd.value || item?.cwd || "",
         lastOpenedAt: new Date().toISOString(),
       },
       { persist: true },
@@ -5639,8 +5934,9 @@ function renderPrimarySummary() {
   els.chatPrimaryStatus.className = sessionStatusClass(status);
   els.chatPrimaryContext.textContent = compactContextLabel();
   els.chatPrimaryModel.textContent = selectedModelLabel();
-  els.chatPrimaryCwd.textContent = shortPath(threadProjectPath(state.codex.threadId) || els.chatCwd.value) || "No directory";
-  els.chatPrimaryCwd.title = threadProjectPath(state.codex.threadId) || els.chatCwd.value || "";
+  const cwd = activeDisplayCwd();
+  els.chatPrimaryCwd.textContent = shortPath(cwd) || "No directory";
+  els.chatPrimaryCwd.title = cwd || "";
   els.codexStatus.textContent = `${statusDisplayLabel(status)} · ${compactContextLabel()}`;
 }
 
@@ -6528,6 +6824,20 @@ function formatNumber(value) {
   return new Intl.NumberFormat().format(value || 0);
 }
 
+function formatBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return "";
+  const units = ["B", "KB", "MB", "GB"];
+  let size = bytes;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  const digits = unitIndex === 0 || size >= 10 ? 0 : 1;
+  return `${size.toFixed(digits)} ${units[unitIndex]}`;
+}
+
 function formatCompactNumber(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "";
   return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(Number(value));
@@ -6808,6 +7118,13 @@ els.renameThreadInput.addEventListener("keydown", (event) => {
     confirmRenameThread();
   }
 });
+els.closeFilePreview.addEventListener("click", closeFilePreview);
+els.filePreviewModal.addEventListener("click", (event) => {
+  if (event.target === els.filePreviewModal) closeFilePreview();
+});
+els.filePreviewOpenRaw.addEventListener("click", () => {
+  if (state.filePreview.rawUrl) window.open(state.filePreview.rawUrl, "_blank", "noreferrer");
+});
 for (const button of document.querySelectorAll("[data-details-tab]")) {
   button.addEventListener("click", () => selectDetailsTab(button.getAttribute("data-details-tab")));
 }
@@ -6912,6 +7229,15 @@ els.chatLog.addEventListener("click", (event) => {
     els.chatInput.focus();
     return;
   }
+  const fileLink = target?.closest("a");
+  if (fileLink) {
+    const reference = localFileReferenceFromAnchor(fileLink);
+    if (reference) {
+      event.preventDefault();
+      openFilePreview(reference).catch((error) => appendChatLine("error", error.message));
+      return;
+    }
+  }
   const copyButton = target?.closest(".copy-code-button");
   if (copyButton) {
     const encoded = copyButton.getAttribute("data-copy-code") || "";
@@ -6927,7 +7253,7 @@ els.chatLog.addEventListener("click", (event) => {
   const viewFileButton = target?.closest("[data-view-file]");
   if (viewFileButton) {
     const path = viewFileButton.getAttribute("data-view-file") || "";
-    window.open(`/api/file?path=${encodeURIComponent(path)}`, "_blank", "noreferrer");
+    openFilePreview({ path }).catch((error) => appendChatLine("error", error.message));
     return;
   }
   const collapseButton = target?.closest("[data-collapse-tool]");
@@ -6974,6 +7300,7 @@ document.addEventListener("keydown", (event) => {
   closeChoiceMenus();
   closeThreadItemMenus();
   if (!els.renameThreadModal.hidden) closeRenameThreadModal();
+  if (!els.filePreviewModal.hidden) closeFilePreview();
   if (!els.threadManagerModal.hidden) closeThreadManager();
   if (!els.personalizationModal.hidden) closePersonalizationWizard();
   if (!els.newThreadModal.hidden) closeNewThreadModal();

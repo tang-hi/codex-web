@@ -424,6 +424,25 @@
         </section>
       </div>
 
+      <div class="modal-backdrop" id="filePreviewModal" hidden>
+        <section class="modal-panel file-preview-panel" role="dialog" aria-modal="true" aria-labelledby="filePreviewTitle">
+          <div class="modal-header">
+            <div>
+              <h2 id="filePreviewTitle">File Preview</h2>
+              <p id="filePreviewMeta">No file selected</p>
+            </div>
+            <button id="closeFilePreview" class="icon-button" type="button" aria-label="Close">Close</button>
+          </div>
+          <div class="file-preview-toolbar">
+            <span id="filePreviewPath"></span>
+            <button id="filePreviewOpenRaw" type="button">Open raw</button>
+          </div>
+          <div class="modal-body file-preview-body">
+            <div id="filePreviewContent" class="file-preview-content"></div>
+          </div>
+        </section>
+      </div>
+
       <div class="modal-backdrop" id="threadManagerModal" hidden>
         <section class="modal-panel thread-manager-panel" role="dialog" aria-modal="true" aria-labelledby="threadManagerTitle">
           <div class="modal-header">

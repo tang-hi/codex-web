@@ -61,7 +61,12 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/file":
-            self.serve_project_file(first(parse_qs(parsed.query), "path"))
+            query = parse_qs(parsed.query)
+            self.serve_project_file(
+                first(query, "path"),
+                requested_cwd=first(query, "cwd"),
+                response_format=first(query, "format"),
+            )
             return
 
         if parsed.path.startswith("/api/attachments/"):
@@ -494,17 +499,24 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def serve_project_file(self, requested_path: str | None) -> None:
+    def serve_project_file(
+        self,
+        requested_path: str | None,
+        requested_cwd: str | None = None,
+        response_format: str | None = None,
+    ) -> None:
         if not requested_path:
             self.send_error_json(HTTPStatus.BAD_REQUEST, "path is required")
             return
 
-        raw_path = Path(requested_path).expanduser()
-        path = raw_path.resolve() if raw_path.is_absolute() else (PROJECT_ROOT / raw_path).resolve()
         try:
-            path.relative_to(PROJECT_ROOT.resolve())
-        except ValueError:
-            self.send_error_json(HTTPStatus.FORBIDDEN, "file must be inside project root")
+            root = self.resolve_file_root(requested_cwd)
+            path = self.resolve_file_path(requested_path, root)
+        except PermissionError as exc:
+            self.send_error_json(HTTPStatus.FORBIDDEN, str(exc))
+            return
+        except ValueError as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, str(exc))
             return
 
         if not path.exists() or not path.is_file():
@@ -513,12 +525,44 @@ class ThreadManagerHandler(BaseHTTPRequestHandler):
 
         body = path.read_bytes()
         content_type = mimetypes.guess_type(path.name)[0] or "text/plain"
+        if (response_format or "").lower() == "json":
+            preview = body[:MAX_FILE_PREVIEW_BYTES]
+            self.send_json(
+                {
+                    "path": str(path),
+                    "cwd": str(root),
+                    "name": path.name,
+                    "mimeType": content_type,
+                    "size": len(body),
+                    "truncated": len(body) > len(preview),
+                    "binary": b"\0" in preview,
+                    "content": preview.decode("utf-8", errors="replace"),
+                }
+            )
+            return
+
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def resolve_file_root(self, requested_cwd: str | None) -> Path:
+        if not requested_cwd:
+            return PROJECT_ROOT.resolve()
+        root = Path(requested_cwd).expanduser().resolve()
+        if not root.exists() or not root.is_dir():
+            raise ValueError("cwd must be an existing directory")
+        return root
+
+    def resolve_file_path(self, requested_path: str, root: Path) -> Path:
+        raw_path = Path(requested_path).expanduser()
+        path = raw_path.resolve() if raw_path.is_absolute() else (root / raw_path).resolve()
+        allowed_roots = [root, PROJECT_ROOT.resolve()]
+        if not any(is_path_inside(path, allowed_root) for allowed_root in allowed_roots):
+            raise PermissionError("file must be inside selected working directory")
+        return path
 
     def serve_attachment(self, requested_path: str | None) -> None:
         try:
@@ -564,11 +608,20 @@ def first(query: dict[str, list[str]], key: str) -> str | None:
     return value or None
 
 
+def is_path_inside(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 AGENTS_MANAGED_START = "<!-- codex-web-managed:start -->"
 AGENTS_MANAGED_END = "<!-- codex-web-managed:end -->"
 THREAD_VISIBILITIES = {"active", "archived", "hidden"}
 MAX_IMAGES_PER_TURN = 5
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_FILE_PREVIEW_BYTES = 1024 * 1024
 PERSONALIZATION_MAX_THREADS = 80
 PERSONALIZATION_TIMEOUT_SECONDS = 600
 PERSONALIZATION_WORK_ROOT = PROJECT_ROOT / ".codex-web-personalize"
