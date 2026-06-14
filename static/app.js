@@ -125,6 +125,7 @@ const state = {
     contextBreakdownRefreshTimer: null,
     contextBreakdownEstimated: false,
     contextContributors: [],
+    contextTools: [],
     autoFollowChat: true,
   },
 };
@@ -246,11 +247,9 @@ const els = {
   contextHealthMeta: document.getElementById("contextHealthMeta"),
   contextHealthBar: document.getElementById("contextHealthBar"),
   contextHealthNote: document.getElementById("contextHealthNote"),
-  contextCategoriesSection: document.getElementById("contextCategoriesSection"),
-  contextCategoryRows: document.getElementById("contextCategoryRows"),
-  contextStackedBar: document.getElementById("contextStackedBar"),
-  contextBreakdownEmpty: document.getElementById("contextBreakdownEmpty"),
-  contextLargestContributors: document.getElementById("contextLargestContributors"),
+  contextToolsTotal: document.getElementById("contextToolsTotal"),
+  contextToolsNote: document.getElementById("contextToolsNote"),
+  contextToolRows: document.getElementById("contextToolRows"),
   toastRegion: document.getElementById("toastRegion"),
   openPersonalization: document.getElementById("openPersonalization"),
   openPersonalizationFromConfig: document.getElementById("openPersonalizationFromConfig"),
@@ -3737,8 +3736,8 @@ function renderDiffCard(diff, title = "Diff") {
   const text = String(diff || "").trim();
   if (!text) return;
   markVisibleTurnOutput();
-  setChangedFiles(parseDiffFiles(text));
-  const diffHtml = diffSectionsHtml(text);
+  const changedFiles = parseDiffFiles(text);
+  setChangedFiles(changedFiles);
 
   let card = document.getElementById("latest-diff-card");
   if (!card) {
@@ -3750,14 +3749,14 @@ function renderDiffCard(diff, title = "Diff") {
   card.className = "tool-card diff-card completed";
   card.innerHTML = `
     <div class="tool-title">
-      <span>${escapeHtml(codeChangeTitle(title, state.codex.changedFiles))}</span>
+      <span>${escapeHtml(codeChangeTitle(title, changedFiles))}</span>
       <div class="tool-actions">
         <button type="button" data-copy-tool="${escapeAttr(encodeURIComponent(text))}">Copy</button>
         <button type="button" data-collapse-tool>Collapse</button>
       </div>
-      <em>${formatNumber(text.split("\n").length)} lines</em>
+      <em>${escapeHtml(codeChangeMeta(changedFiles, text))}</em>
     </div>
-    <div class="diff-inline" aria-label="File changes">${diffHtml}</div>
+    ${changedFiles.length ? codeChangeSummaryHtml(changedFiles) : '<div class="tool-empty">File change details are unavailable.</div>'}
   `;
   scrollChatToBottom();
 }
@@ -3813,7 +3812,7 @@ function toolItemHtml(item, lifecycle) {
     const command = stripShellWrapper(item.command || "");
     const noOutput = lifecycle === "completed" && !output && isSuccessStatus(status);
     const running = isRunningStatus(status);
-    const showOutputOpen = running || isDiffLikeOutput(output, command);
+    const showOutputOpen = running;
     const summary = commandSummary(item, status, output);
     return `
       <div class="tool-title">
@@ -3826,7 +3825,7 @@ function toolItemHtml(item, lifecycle) {
       </div>
       <div class="tool-summary">${escapeHtml(summary)}</div>
       <details class="command-details" ${showOutputOpen ? "open" : ""}>
-        <summary>${escapeHtml(running ? "Running command" : isDiffLikeOutput(output, command) ? "Command diff" : "Command log")}</summary>
+        <summary>${escapeHtml(running ? "Running command" : "Command log")}</summary>
         ${item.cwd ? `<div class="tool-subtitle">${escapeHtml(shortPath(item.cwd))}</div>` : ""}
         <pre class="command-line">$ ${escapeHtml(command)}</pre>
         ${output ? commandOutputHtml(output, command) : noOutput ? '<div class="tool-empty">(no output)</div>' : ""}
@@ -3838,32 +3837,18 @@ function toolItemHtml(item, lifecycle) {
     const primaryPath = changeItems[0]?.path || "";
     const itemDiff = item.diff || "";
     const combinedDiff = itemDiff || changeItems.map((change) => change.diff || "").filter(Boolean).join("\n\n");
-    const changes = (item.changes || [])
-      .map(
-        (change) =>
-          `<li title="${escapeAttr(change.path || "")}"><strong>${escapeHtml(fileChangeVerb(change.kind))}</strong> ${escapeHtml(relativeProjectPath(change.path || ""))}</li>`,
-      )
-      .join("");
-    const diffs = itemDiff
-      ? diffSectionsHtml(itemDiff)
-      : (item.changes || [])
-          .map((change) =>
-            change.diff
-              ? `<section class="diff-file"><div class="diff-file-header"><span class="diff-file-path">${escapeHtml(relativeProjectPath(change.path || "diff"))}</span></div>${diffToHtml(change.diff)}</section>`
-              : "",
-          )
-          .join("");
+    const summaryFiles = normalizeCodeChangeFiles(changeItems, itemDiff);
     return `
       <div class="tool-title">
-        <span>${escapeHtml(codeChangeTitle("Patch", changeItems))}</span>
+        <span>${escapeHtml(codeChangeTitle("Patch", summaryFiles))}</span>
         <div class="tool-actions">
           ${combinedDiff ? `<button type="button" data-copy-tool="${escapeAttr(encodeURIComponent(combinedDiff))}">Copy</button>` : ""}
           ${primaryPath ? `<button type="button" data-view-file="${escapeAttr(primaryPath)}" title="${escapeAttr(primaryPath)}">View file</button>` : ""}
           <button type="button" data-collapse-tool>Collapse</button>
         </div>
-        <em>${escapeHtml(statusLabel(status))}</em>
+        <em>${escapeHtml(summaryFiles.length ? codeChangeMeta(summaryFiles, combinedDiff) : statusLabel(status))}</em>
       </div>
-      ${diffs ? `<div class="diff-inline" aria-label="File changes">${diffs}</div>` : changes ? `<ul class="change-list">${changes}</ul><div class="tool-empty diff-unavailable">Diff unavailable for this file change.</div>` : '<div class="tool-empty">(no file changes)</div>'}
+      ${summaryFiles.length ? codeChangeSummaryHtml(summaryFiles) : '<div class="tool-empty">(no file changes)</div>'}
     `;
   }
   if (item.type === "mcpToolCall") {
@@ -3917,15 +3902,12 @@ function renderCommandOutput(card, output, command) {
   if (existing) {
     existing.outerHTML = html;
     const details = card.querySelector(".command-details");
-    if (details && isDiffLikeOutput(output, command)) details.open = true;
     return;
   }
   const commandLine = card.querySelector(".command-line");
   if (commandLine) {
     commandLine.insertAdjacentHTML("afterend", html);
   }
-  const details = card.querySelector(".command-details");
-  if (details && isDiffLikeOutput(output, command)) details.open = true;
 }
 
 function commandFromCard(card) {
@@ -3936,10 +3918,11 @@ function commandFromCard(card) {
 function commandOutputHtml(output, command) {
   if (isDiffLikeOutput(output, command)) {
     const text = String(output || "").trim();
+    const files = parseDiffFiles(text);
     return `
-      <div class="tool-output-wrap diff-output">
-        <div class="tool-output-meta">Unified diff · ${formatNumber(splitOutputLines(text).length)} lines</div>
-        ${diffSectionsHtml(text)}
+      <div class="tool-output-wrap diff-output-summary">
+        <div class="tool-output-meta">Diff output hidden · ${files.length ? `${formatNumber(files.length)} ${files.length === 1 ? "file" : "files"}` : `${formatNumber(splitOutputLines(text).length)} lines`}</div>
+        ${files.length ? codeChangeSummaryHtml(files) : '<div class="tool-empty">Unified diff output is not rendered in tool logs.</div>'}
       </div>
     `;
   }
@@ -4538,6 +4521,76 @@ function parseDiffFiles(diff) {
     else if (line.startsWith("-") && !line.startsWith("---")) current.deletions += 1;
   }
   return files;
+}
+
+function normalizeCodeChangeFiles(changes = [], diff = "") {
+  const parsed = parseDiffFiles(diff);
+  const parsedByPath = new Map(parsed.map((file) => [String(file.path || ""), file]));
+  const merged = [];
+  const seen = new Set();
+
+  for (const change of changes || []) {
+    const path = change.path || change.filePath || change.file_path || "";
+    if (!path) continue;
+    const parsedFile = parsedByPath.get(path) || parsedByPath.get(relativeProjectPath(path));
+    const file = {
+      path,
+      kind: change.kind || parsedFile?.kind || "modify",
+      additions: Number(change.additions ?? change.addedLines ?? change.added_lines ?? parsedFile?.additions ?? 0),
+      deletions: Number(change.deletions ?? change.deletedLines ?? change.deleted_lines ?? parsedFile?.deletions ?? 0),
+    };
+    merged.push(file);
+    seen.add(path);
+    seen.add(relativeProjectPath(path));
+  }
+
+  for (const file of parsed) {
+    if (!seen.has(file.path) && !seen.has(relativeProjectPath(file.path))) {
+      merged.push(file);
+    }
+  }
+
+  return merged;
+}
+
+function codeChangeSummaryHtml(files) {
+  const rows = (files || [])
+    .map((file) => {
+      const path = relativeProjectPath(file.path || "");
+      const delta = fileLineDelta(file);
+      return `
+        <li class="code-change-row" title="${escapeAttr(file.path || "")}">
+          <span class="code-change-kind ${safeId(fileChangeVerb(file.kind).toLowerCase())}">${escapeHtml(fileChangeKind(file.kind))}</span>
+          <span class="code-change-path">${escapeHtml(path || "Unknown file")}</span>
+          ${delta ? `<span class="code-change-delta">${escapeHtml(delta)}</span>` : ""}
+        </li>
+      `;
+    })
+    .join("");
+  return `<ul class="code-change-list" aria-label="Changed files">${rows}</ul>`;
+}
+
+function fileLineDelta(file) {
+  const additions = Number(file?.additions || 0);
+  const deletions = Number(file?.deletions || 0);
+  const parts = [];
+  if (additions) parts.push(`+${formatNumber(additions)}`);
+  if (deletions) parts.push(`-${formatNumber(deletions)}`);
+  return parts.join(" ");
+}
+
+function codeChangeMeta(files, diff = "") {
+  const changed = files || [];
+  if (changed.length) {
+    const additions = changed.reduce((sum, file) => sum + Number(file.additions || 0), 0);
+    const deletions = changed.reduce((sum, file) => sum + Number(file.deletions || 0), 0);
+    const deltas = [];
+    if (additions) deltas.push(`+${formatNumber(additions)}`);
+    if (deletions) deltas.push(`-${formatNumber(deletions)}`);
+    return [`${formatNumber(changed.length)} ${changed.length === 1 ? "file" : "files"}`, ...deltas].join(" · ");
+  }
+  const lineCount = splitOutputLines(String(diff || "")).length;
+  return lineCount ? `${formatNumber(lineCount)} diff lines hidden` : "file changes";
 }
 
 function codeChangeTitle(title, files) {
@@ -5540,6 +5593,7 @@ function setActiveThread(id, options = {}) {
     state.codex.contextBreakdownThreadId = null;
     state.codex.contextBreakdownEstimated = false;
     state.codex.contextContributors = [];
+    state.codex.contextTools = [];
   }
   if (id) {
     const item = state.items.find((entry) => entry.id === id);
@@ -5602,12 +5656,14 @@ function primeContextFromHistoryTurns(threadId, turns) {
   state.codex.contextBreakdownThreadId = threadId;
   state.codex.contextBreakdownEstimated = true;
   state.codex.contextContributors = summary.contributors;
+  state.codex.contextTools = summary.tools;
   renderChatStatus();
 }
 
 function contextBreakdownFromHistoryTurns(turns) {
   const buckets = new Map();
   const contributors = [];
+  const toolUsage = new Map();
   const add = (category, label, text, metadata = {}) => {
     const value = String(text || "").trim();
     if (!value) return;
@@ -5632,6 +5688,15 @@ function contextBreakdownFromHistoryTurns(turns) {
       ...metadata,
     });
   };
+  const addTool = (rawTool, detail = "") => {
+    const tool = optionalText(rawTool) || "tool";
+    const label = contextToolDisplayName(tool);
+    const existing = toolUsage.get(label) || { id: safeId(tool), tool, label, count: 0, examples: [] };
+    existing.count += 1;
+    const example = optionalText(detail);
+    if (example && existing.examples.length < 3 && !existing.examples.includes(example)) existing.examples.push(example);
+    toolUsage.set(label, existing);
+  };
 
   for (const turn of turns || []) {
     add("user_messages", "User message", textFromContent(turn?.input));
@@ -5643,12 +5708,14 @@ function contextBreakdownFromHistoryTurns(turns) {
         add("assistant_messages", "Assistant reply", itemText(item));
       } else if (type === "commandExecution") {
         const command = stripShellWrapper(item.command || "");
+        addTool("exec_command", command);
         add("tool_outputs", command ? contextCommandLabel(command) : "Command output", item.aggregatedOutput || item.output || "", { command });
       } else if (type === "fileChange") {
         const diff = item.diff || (item.changes || []).map((change) => change.diff || "").filter(Boolean).join("\n\n");
         add("diffs", "File changes", diff, { filePath: item.changes?.[0]?.path || "" });
       } else if (type === "mcpToolCall" || type === "dynamicToolCall") {
         const label = [item.server, item.namespace, item.tool].filter(Boolean).join(".");
+        addTool(item.tool || item.name || type, label);
         add("tool_outputs", label ? `${label} output` : "Tool output", JSON.stringify(item.result || item.error || item.contentItems || item.arguments || ""), { tool: item.tool || "" });
       }
     }
@@ -5659,7 +5726,8 @@ function contextBreakdownFromHistoryTurns(turns) {
     .map((item) => ({ ...item, percentage: totalTokens ? (item.tokens / totalTokens) * 100 : 0 }))
     .sort((left, right) => right.tokens - left.tokens);
   contributors.sort((left, right) => right.tokens - left.tokens);
-  return { items, contributors: contributors.slice(0, 12), totalTokens };
+  const tools = [...toolUsage.values()].sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
+  return { items, contributors: contributors.slice(0, 12), tools, totalTokens };
 }
 
 function estimateContextTokens(text) {
@@ -5696,6 +5764,7 @@ async function loadThreadContextBreakdown(threadId, options = {}) {
       state.codex.contextBreakdownThreadId = threadId;
       state.codex.contextBreakdownEstimated = Boolean(data.estimated);
       state.codex.contextContributors = data.contributors || [];
+      state.codex.contextTools = data.tools || [];
     }
     renderChatStatus();
   } catch (error) {
@@ -5732,6 +5801,7 @@ function resetChatTranscript() {
   }
   state.codex.contextBreakdownEstimated = false;
   state.codex.contextContributors = [];
+  state.codex.contextTools = [];
   state.codex.pendingTurnThreadId = "";
   state.codex.turnHasVisibleOutput = false;
   state.codex.autoFollowChat = true;
@@ -6164,15 +6234,14 @@ function renderContextInspector() {
   if (!els.contextUsageValue) return;
   const summary = buildContextSummary();
   renderContextHealth(summary);
-  renderContextEmptyState(summary);
-  renderContextCategories(summary);
-  renderContextContributorGroups(summary);
+  renderContextTools(summary);
 }
 
 function buildContextSummary() {
   const usage = state.codex.tokenUsage || {};
   const rawCategories = hasCurrentContextBreakdown() ? state.codex.contextBreakdown || [] : [];
   const rawContributors = hasCurrentContextBreakdown() ? state.codex.contextContributors || [] : [];
+  const rawTools = hasCurrentContextBreakdown() ? state.codex.contextTools || [] : [];
   const normalizedCategories = rawCategories.map((item, index) => normalizeContextBreakdownItem(item, index)).filter(Boolean);
   const breakdownTotalTokens = normalizedCategories.reduce((sum, item) => sum + item.tokens, 0);
   const liveContextTokens = firstNumber(usage.used);
@@ -6186,6 +6255,7 @@ function buildContextSummary() {
     .filter(Boolean)
     .map((item) => scaleContextTokens(item, attributionScale))
     .sort((left, right) => right.rawTokens - left.rawTokens);
+  const tools = normalizeContextTools(rawTools, contributors);
   const usagePercentage =
     estimatedTokens !== null && maxContextTokens !== null && maxContextTokens > 0 ? clamp((estimatedTokens / maxContextTokens) * 100, 0, 100) : null;
   const hasDetailedAttribution = contributors.some((item) => hasUsefulContextAttribution(item));
@@ -6201,6 +6271,7 @@ function buildContextSummary() {
     hasDetailedAttribution,
     categories,
     contributors,
+    tools,
   };
 }
 
@@ -6326,71 +6397,63 @@ function renderContextHealth(summary) {
   els.contextHealthNote.textContent = contextHealthNote(summary);
 }
 
-function renderContextEmptyState(summary) {
-  const unavailable = !summary.hasCoarseAttribution;
-  els.contextBreakdownEmpty.hidden = !unavailable;
-  if (els.contextCategoriesSection) els.contextCategoriesSection.hidden = unavailable;
+function normalizeContextTools(rawTools, contributors = []) {
+  const tools = new Map();
+  const add = (tool, count = 1, examples = []) => {
+    const raw = optionalText(tool.tool || tool.id || tool.name || tool.label || tool) || "tool";
+    const label = optionalText(tool.label) || contextToolDisplayName(raw);
+    const key = label.toLowerCase();
+    const existing = tools.get(key) || { id: safeId(raw), tool: raw, label, count: 0, examples: [] };
+    existing.count += Math.max(0, Number(count || tool.count || tool.calls || 1));
+    const values = Array.isArray(tool.examples) ? tool.examples : examples;
+    for (const value of values) {
+      const example = optionalText(value);
+      if (example && existing.examples.length < 3 && !existing.examples.includes(example)) existing.examples.push(example);
+    }
+    tools.set(key, existing);
+  };
+
+  for (const item of rawTools || []) add(item, item.count || item.calls || 1);
+
+  if (!tools.size) {
+    for (const item of contributors || []) {
+      if (item.category !== "tool_outputs") continue;
+      const rawTool = item.tool || (item.command ? "exec_command" : item.label);
+      add({ tool: rawTool, label: contextToolDisplayName(rawTool), examples: item.command ? [item.command] : [] });
+    }
+  }
+
+  return [...tools.values()].sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
 }
 
-function renderContextCategories(summary) {
-  els.contextCategoryRows.innerHTML = "";
-  els.contextStackedBar.innerHTML = "";
-  if (!summary.hasCoarseAttribution) {
-    els.contextStackedBar.hidden = true;
+function renderContextTools(summary) {
+  if (!els.contextToolRows) return;
+  const tools = summary.tools || [];
+  const total = tools.reduce((sum, item) => sum + item.count, 0);
+  if (els.contextToolsTotal) els.contextToolsTotal.textContent = `${formatNumber(total)} ${total === 1 ? "call" : "calls"}`;
+  if (els.contextToolsNote) {
+    els.contextToolsNote.textContent = tools.length
+      ? "Tool calls detected in the indexed thread history."
+      : "No tool calls detected in the indexed context yet.";
+  }
+  if (!tools.length) {
+    els.contextToolRows.innerHTML = '<div class="context-tool-empty">No tools used yet.</div>';
     return;
   }
-  els.contextStackedBar.hidden = false;
-  for (const item of summary.categories) {
-    const row = document.createElement("div");
-    row.className = "context-category-row";
-    row.innerHTML = `
-      <span class="context-category-name">${escapeHtml(item.label)}</span>
-      <strong>${escapeHtml(formatCompactNumber(item.tokens))} tokens</strong>
-      <span class="context-percent">${escapeHtml(formatPercent(item.percentage))}</span>
-      <span class="context-row-bar"><i class="${contextCategoryClass(item.category)}" style="width: ${Math.max(2, item.percentage)}%"></i></span>
-    `;
-    els.contextCategoryRows.appendChild(row);
-
-    const segment = document.createElement("span");
-    segment.className = `context-segment ${contextCategoryClass(item.category)}`;
-    segment.style.width = `${Math.max(1, item.percentage)}%`;
-    segment.title = `${item.label}: ${formatCompactNumber(item.tokens)} tokens · ${formatPercent(item.percentage)}`;
-    segment.textContent = item.percentage >= 14 ? `${item.label} ${formatPercent(item.percentage)}` : "";
-    els.contextStackedBar.appendChild(segment);
-  }
-}
-
-function renderContextContributorGroups(summary) {
-  els.contextLargestContributors.innerHTML = "";
-  if (!summary.hasCoarseAttribution) {
-    els.contextLargestContributors.innerHTML = '<div class="details-empty compact-empty">No attribution data available.</div>';
-    return;
-  }
-  if (!summary.hasDetailedAttribution) {
-    const notice = document.createElement("div");
-    notice.className = "details-empty compact-empty context-detail-notice";
-    notice.innerHTML = "<strong>Detailed contributors unavailable</strong><span>Showing coarse category estimates only. Command-level and file-level attribution is not available yet.</span>";
-    els.contextLargestContributors.appendChild(notice);
-  }
-
-  const contributorsByGroup = groupContextContributors(summary.contributors);
-  const groups = summary.categories.slice(0, 4);
-  for (const category of groups) {
-    const items = (contributorsByGroup.get(category.category) || []).slice(0, 5);
-    const card = document.createElement("article");
-    card.className = "context-contributor-card";
-    card.innerHTML = `
-      <div class="context-contributor-head">
-        <div>
-          <strong>${escapeHtml(category.label)}</strong>
-          <span>${escapeHtml(formatCompactNumber(category.tokens))} tokens · ${escapeHtml(formatPercent(category.percentage))} of breakdown</span>
+  els.contextToolRows.innerHTML = tools
+    .map((item) => {
+      const examples = (item.examples || []).slice(0, 2);
+      return `
+        <div class="context-tool-row">
+          <div>
+            <strong>${escapeHtml(item.label)}</strong>
+            ${examples.length ? `<span>${escapeHtml(examples.map((value) => truncateMiddle(value, 58)).join(" · "))}</span>` : ""}
+          </div>
+          <em>${escapeHtml(formatNumber(item.count))}</em>
         </div>
-      </div>
-      <p>${escapeHtml(contextGroupDescription(category, items))}</p>
-      ${items.length ? contextContributorListHtml(items) : '<div class="sidebar-empty">Detailed contributors are not available for this category.</div>'}
-    `;
-    els.contextLargestContributors.appendChild(card);
-  }
+      `;
+    })
+    .join("");
 }
 
 function getHumanReadableContextLabel(item) {
@@ -6416,6 +6479,31 @@ function getHumanReadableContextLabel(item) {
     return "Command output";
   }
   return raw && !isInternalContextLabel(raw) ? `${contextCategoryGroup(category).label} · ${raw}` : contextCategoryGroup(category).label;
+}
+
+function contextToolDisplayName(tool) {
+  const raw = optionalText(tool).replace(/^functions\./, "").replace(/^multi_tool_use\./, "");
+  const key = raw.toLowerCase();
+  const labels = {
+    exec_command: "Shell commands",
+    commandexecution: "Shell commands",
+    write_stdin: "Terminal input",
+    apply_patch: "File edits",
+    update_plan: "Plan updates",
+    view_image: "Image previews",
+    imagegen: "Image generation",
+    image_generation: "Image generation",
+    "web.run": "Web lookups",
+    parallel: "Parallel tool calls",
+    mcp_tool_call: "MCP tool calls",
+    mcptoolcall: "MCP tool calls",
+    dynamictoolcall: "Dynamic tool calls",
+  };
+  if (labels[key]) return labels[key];
+  if (!raw || isInternalContextLabel(raw)) return "Tool calls";
+  return raw
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (value) => value.toUpperCase());
 }
 
 function contextCommandLabel(command, filePath = "") {
@@ -6516,55 +6604,10 @@ function contextHealthNote(summary) {
   return "Context usage is within a manageable range.";
 }
 
-function groupContextContributors(contributors) {
-  const groups = new Map();
-  for (const item of contributors) {
-    const group = contextCategoryGroup(item.category).id;
-    if (!groups.has(group)) groups.set(group, []);
-    groups.get(group).push(item);
-  }
-  for (const items of groups.values()) items.sort((left, right) => right.tokens - left.tokens);
-  return groups;
-}
-
-function contextContributorListHtml(items) {
-  return `
-    <ol class="context-contributor-list">
-      ${items
-        .map(
-          (item) => `
-            <li>
-              <span>${escapeHtml(item.label)}</span>
-              <strong>${escapeHtml(formatCompactNumber(item.tokens))}</strong>
-            </li>
-          `,
-        )
-        .join("")}
-    </ol>
-  `;
-}
-
-function contextGroupDescription(category, items) {
-  if (category.category === "tool_outputs") {
-    if (items.some((item) => /diff/i.test(item.label))) return "Mostly command logs, diffs, and tool results.";
-    return "Mostly command logs and tool results.";
-  }
-  if (category.category === "thread_messages") return "Conversation turns retained in the current context.";
-  if (category.category === "system_config") return "System prompt and developer instructions.";
-  if (category.category === "agents") return "Project guidance loaded from AGENTS.md.";
-  if (category.category === "files_diffs") return "File previews, changed-file summaries, and patch excerpts.";
-  return category.description || "Context sources grouped by category.";
-}
-
 function formatPercent(value) {
   const number = Number(value || 0);
   if (number > 0 && number < 1) return "<1%";
   return `${Math.round(number)}%`;
-}
-
-function contextCategoryClass(category) {
-  const value = String(category || "other").replace(/[^a-z0-9_-]/gi, "-").toLowerCase();
-  return `category-${value}`;
 }
 
 function contextPercentUsed(tokens, windowTokens) {

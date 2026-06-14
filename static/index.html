@@ -254,44 +254,13 @@
                     <p id="contextHealthNote" class="context-health-note">Detailed context attribution will appear after the thread has enough indexed activity.</p>
                   </div>
 
-                  <div id="contextBreakdownEmpty" class="details-empty context-empty-state">
-                    <strong>Context breakdown unavailable</strong>
-                    <span>We can estimate total context usage, but detailed source attribution is not available for this thread yet.</span>
-                    <div class="context-empty-grid">
-                      <div>
-                        <b>Available now</b>
-                        <ul>
-                          <li>Estimated total tokens</li>
-                          <li>Thread status</li>
-                          <li>Changed files</li>
-                        </ul>
-                      </div>
-                      <div>
-                        <b>Unavailable</b>
-                        <ul>
-                          <li>Exact per-source token breakdown</li>
-                          <li>Largest contributor attribution</li>
-                        </ul>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div class="context-section" id="contextCategoriesSection">
+                  <div class="context-section" id="contextToolsSection">
                     <div class="context-section-header">
-                      <h4>Top categories</h4>
+                      <h4>Tools used</h4>
+                      <span id="contextToolsTotal" class="context-tools-total">0 calls</span>
                     </div>
-                    <div id="contextCategoryRows" class="context-category-list"></div>
-                    <div class="context-mix">
-                      <span>Category mix</span>
-                      <div class="context-stacked-bar" id="contextStackedBar"></div>
-                    </div>
-                  </div>
-
-                  <div class="context-section">
-                    <div class="context-section-header">
-                      <h4>Largest contributors</h4>
-                    </div>
-                    <div id="contextLargestContributors" class="context-list"></div>
+                    <p id="contextToolsNote" class="context-tools-note">Tool calls will appear as this thread is indexed.</p>
+                    <div id="contextToolRows" class="context-tool-list"></div>
                   </div>
                 </div>
               </section>

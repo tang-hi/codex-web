@@ -889,7 +889,7 @@ def unified_text_diff(current: str, proposed: str, target_path: Path) -> str:
 def context_breakdown_for_thread(index: CodexThreadIndex, thread_id: str) -> dict[str, object]:
     record = index.records.get(thread_id)
     if not record or not record.rollout_path:
-        return {"items": [], "contributors": [], "suggestions": [], "totalTokens": 0, "estimated": True}
+        return {"items": [], "contributors": [], "tools": [], "suggestions": [], "totalTokens": 0, "estimated": True}
 
     path = Path(record.rollout_path).expanduser()
     buckets: dict[str, dict[str, object]] = {}
@@ -936,7 +936,7 @@ def context_breakdown_for_thread(index: CodexThreadIndex, thread_id: str) -> dic
                     continue
                 add_context_event(event, add, tool_calls)
     except OSError:
-        return {"items": [], "contributors": [], "suggestions": [], "totalTokens": 0, "estimated": True}
+        return {"items": [], "contributors": [], "tools": [], "suggestions": [], "totalTokens": 0, "estimated": True}
 
     total = sum(int(item["tokens"]) for item in buckets.values())
     items = []
@@ -948,6 +948,7 @@ def context_breakdown_for_thread(index: CodexThreadIndex, thread_id: str) -> dic
     return {
         "items": items,
         "contributors": contributors[:12],
+        "tools": context_tool_usage(tool_calls),
         "suggestions": context_suggestions(items),
         "totalTokens": total,
         "estimated": True,
@@ -1002,6 +1003,7 @@ def add_context_event(event: dict[str, object], add: object, tool_calls: dict[st
         call_id = optional_str(payload.get("call_id"))
         metadata = tool_calls.get(call_id, {})
         label = tool_output_label(payload, metadata)
+        record_context_tool_usage(tool_calls, call_id, payload_type, payload, metadata, label)
         add(
             "tool_outputs",
             label,
@@ -1439,6 +1441,79 @@ def tool_output_label(payload: dict[str, object], metadata: dict[str, object] | 
     if tool:
         return f"{tool} output"
     return "Tool output"
+
+
+def record_context_tool_usage(
+    tool_calls: dict[str, dict[str, object]],
+    call_id: str,
+    payload_type: str,
+    payload: dict[str, object],
+    metadata: dict[str, object],
+    label: str,
+) -> None:
+    key = call_id or f"{payload_type}-{len(tool_calls)}"
+    entry = tool_calls.setdefault(key, {})
+    entry.update(metadata)
+    if "tool" not in entry:
+        entry["tool"] = optional_str(payload.get("tool")) or optional_str(payload.get("name")) or payload_type
+    entry["_count"] = int(entry.get("_count") or 0) + 1
+    examples = entry.setdefault("_examples", [])
+    if isinstance(examples, list) and len(examples) < 3:
+        example = optional_str(entry.get("command")) or optional_str(entry.get("filePath")) or label
+        if example and example not in examples:
+            examples.append(truncate(example, 120))
+
+
+def context_tool_usage(tool_calls: dict[str, dict[str, object]]) -> list[dict[str, object]]:
+    grouped: dict[str, dict[str, object]] = {}
+    for item in tool_calls.values():
+        count = int(item.get("_count") or 0)
+        if count <= 0:
+            continue
+        tool = optional_str(item.get("tool")) or "tool"
+        label = context_tool_label(tool)
+        entry = grouped.setdefault(
+            label,
+            {
+                "id": re.sub(r"[^a-zA-Z0-9_-]+", "-", tool).strip("-") or "tool",
+                "tool": tool,
+                "label": label,
+                "count": 0,
+                "examples": [],
+            },
+        )
+        entry["count"] = int(entry["count"]) + count
+        examples = entry["examples"]
+        if isinstance(examples, list):
+            for example in item.get("_examples") or []:
+                if len(examples) >= 3:
+                    break
+                if example and example not in examples:
+                    examples.append(example)
+    return sorted(grouped.values(), key=lambda item: (-int(item["count"]), str(item["label"])))
+
+
+def context_tool_label(tool: str) -> str:
+    value = tool.removeprefix("functions.").removeprefix("multi_tool_use.").strip()
+    labels = {
+        "exec_command": "Shell commands",
+        "commandExecution": "Shell commands",
+        "write_stdin": "Terminal input",
+        "apply_patch": "File edits",
+        "update_plan": "Plan updates",
+        "view_image": "Image previews",
+        "imagegen": "Image generation",
+        "image_generation": "Image generation",
+        "web.run": "Web lookups",
+        "parallel": "Parallel tool calls",
+        "mcpToolCall": "MCP tool calls",
+        "dynamicToolCall": "Dynamic tool calls",
+    }
+    if value in labels:
+        return labels[value]
+    if not value or value == "function_call_output":
+        return "Tool calls"
+    return " ".join(part.capitalize() for part in re.split(r"[_-]+", value) if part)
 
 
 def command_output_label(command: str, file_path: str = "") -> str:
